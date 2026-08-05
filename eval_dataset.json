@@ -1,0 +1,288 @@
+[
+ {
+  "drug_name": "Iron And Folic Acid Tablets I.P.",
+  "manufacturer": "Unicure India Ltd,C-21, 22 & 23, Sector-3, Noida-201301, Distt. Gautam Budh Nagar (U.P)",
+  "batch_no": "IFAT1245",
+  "reason": "The sample does not  conform to IP with respect to Description.",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ },
+ {
+  "drug_name": "Iron & Folic Acid Tablets IP",
+  "manufacturer": "Cipco Pharmaceuticals,35-36/1 A.B. Road, Gram Pigdamber, Dist. Indore 453331 (MP) INDIA",
+  "batch_no": "IFS250104",
+  "reason": "The sample is not of standard quality for the reason stated under Description.",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ },
+ {
+  "drug_name": "Dextromethorphan HBr, Phenylephrine HCL with Chlorpheniramine maleate Syrup",
+  "manufacturer": "Seejar Pharmaceuticals,  Plot No. 5, Survey No. 198 Paiki 1/paiki 2, Behind CCL Factory, Near Gajanand Foods, Irana Road, Budasan, Tal. Kadi, Dist. Mehsana, PIN 382715",
+  "batch_no": "SP251109",
+  "reason": "The sample received does not conform  to the claim with respect to the test for Assay of Dextromethorphan Hydrobromide and Phenylephrine Hydrochloride.",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ },
+ {
+  "drug_name": "Telmisartan & Amlodipine Tablets IP",
+  "manufacturer": "Zoic Biotech Pvt. Ltd., Plot No. C-15, Focal Point, Ind. Area, Chanalon Mohali (Punjab)-140103",
+  "batch_no": "ZTF-058A",
+  "reason": "Test for Dissolution",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ },
+ {
+  "drug_name": "Ofloxacin & Ornidazole Tablets IP",
+  "manufacturer": "Park Pharmaceuticals, Vill Kalujhanda, Near Nanakpur, The. Distt. Solan(H.P) 174103",
+  "batch_no": "OBT-2972",
+  "reason": "Dissolution Test",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ },
+ {
+  "drug_name": "Terbutaline Sulphate, Ambroxol Hydrochloride and Guaiphenesin Syrup",
+  "manufacturer": "Aucklane Life Sciences Pvt. Ltd., RS. No:195/9 & 197/4, Pangoor, Ariyur Revenue Village, Villianur, Puducherry, 605102",
+  "batch_no": "AKL26",
+  "reason": "Content",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ },
+ {
+  "drug_name": "Phenytoin Tablets IP 100 mg",
+  "manufacturer": "Jackson Laboratories Pvt. Ltd., 22-24, Majitha Road, Bye Pass Amritsar-143001 (India)",
+  "batch_no": "T-5616",
+  "reason": "The sample fails in the Test for Description of Tablets.",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ },
+ {
+  "drug_name": "Diclofenac Sodium Injection",
+  "manufacturer": "Neon Laboratories Ltd.at Plot No.G84/1,Tarapur MIDC boisar 401506.",
+  "batch_no": "2507017",
+  "reason": "Thesample does not conform to I.P w.r.t the test for Description and Particulate matter",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ },
+ {
+  "drug_name": "Aluminium Hydroxide, Magnesium Hydroxide & Simethicone Oral Suspension IP",
+  "manufacturer": "Pharmaroots Healthcare. Khasra No.411, Village Tipra, P.O, Barotiwala, Tehsil Baddi, Distt. Solan, H.P",
+  "batch_no": "PL-40143",
+  "reason": "Content and Microbial Limit",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ },
+ {
+  "drug_name": "Iron Sucrose Injection USP 5 ml",
+  "manufacturer": "Arco Lifesciences (India) Pvt Ltd  C-86, M.I.D.C. Hingna, Nagpur - 440016 MAHARASHTRA",
+  "batch_no": "7505",
+  "reason": "sample Does not meet the Specifications w.r.t. Sterility Test.",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ },
+ {
+  "drug_name": "Ibuprofen & Paracetamol Suspension",
+  "manufacturer": "Linux Life Sciences Pvt Ltd  Plot No. 6 biotech park phase \u2013 III, Karkapatla, Markook, Siddipet 502281 Telangana",
+  "batch_no": "BPY24H09",
+  "reason": "Description and  Assay of Ibuprofen and Paracetamol",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ },
+ {
+  "drug_name": "Cetirizine Dihydrochloride Tablets IP 10 mg",
+  "manufacturer": "Suprex laboratories  11/C, Industrial area, Maxi road, Ujjain(M.P.) MADHYA PRADESH",
+  "batch_no": "CTT-2416",
+  "reason": "Description",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ },
+ {
+  "drug_name": "Povidone Iodine Solution IP",
+  "manufacturer": "Microwin Labs Pvt Ltd  Plot No. 363, Industrial area, Phase-9, Mohali-160062, Punjab PUNJAB",
+  "batch_no": "GMW0121",
+  "reason": "sample does not meets the Specifications wrt. Assay of Available lodine as per IP. 2022.",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ },
+ {
+  "drug_name": "Paracetamol Pediatric Oral  Suspension IP",
+  "manufacturer": "Smayan Healthcare Pvt ltd  Plot No. 26-27, HPSIDC Ind. Area, Vill Davni, Baddi, Distt, Solan (H.P)-173205",
+  "batch_no": "L4H088",
+  "reason": "Assay for paracetamol does not comply as per IP 2022.",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ },
+ {
+  "drug_name": "Amoxycillin & Potassium Clavulanate Tablets IP",
+  "manufacturer": "Athens Life Sciences  Mauza Rampur Jattan, Nahan Road, Kala Amb, Dist. Sirmour, H.P.-173030",
+  "batch_no": "TB24-0672D",
+  "reason": "Assay of Amoxycillin and Clavulanic acid  and Dissolution test for Amoxycillin",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ },
+ {
+  "drug_name": "Pantoprazole Tablets IP",
+  "manufacturer": "Spinka Pharma                                  6-18/4,  Peddamberpet, Hyderabad - 501505               Telangana",
+  "batch_no": "PPC-5021",
+  "reason": "Dissolution And  Misbranded Drug",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ },
+ {
+  "drug_name": "Amoxycillin & Potassium Clavulanate Tablets IP",
+  "manufacturer": "Mayer Lab  Chambaghat, Adjacent to Railway crossing, Distt. Solan, HP \u2013 173 213 Himachal Pradesh",
+  "batch_no": "MYRTAB-1038",
+  "reason": "Assay and Dissolution of Clavulanic Acid does not comply as per IP. 2022",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ },
+ {
+  "drug_name": "Aceclofenac & paracetamol tablets",
+  "manufacturer": "Laborate pharmaceuticals India ltd.  51, Indl Area, Paonta sahib (H.P.)",
+  "batch_no": "ACAUT-007",
+  "reason": "Misbranded",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ },
+ {
+  "drug_name": "Ofloxacin And Ornidazole Tablets IP",
+  "manufacturer": "Square Pharmaceuticals, Mohispota, Kolkata-700 113.",
+  "batch_no": "51",
+  "reason": "The sample declared as Misbranded  Drug as per Sec 17(a) and  17(b) of Drugs and Cosmetics Act 1940 as it is not labelled in the prescribed manner.  The sample declared as Not of Standard Quality in respect of the Test Assay performed.",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ },
+ {
+  "drug_name": "Cetirizine Chydrochloride Syrup IP",
+  "manufacturer": "Thorab Pharma and Research Laboratory, RS. No. 144/5 pt, Earikkarai Road,Thiruvandarkoil, Puducherry-605 102.",
+  "batch_no": "MGMP 0898",
+  "reason": "Failed pH",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ },
+ {
+  "drug_name": "Pantoprazole Gastro Resistant Tablets IP",
+  "manufacturer": "Athens Life Sciences, Mauza Rampur Jattan, Nahan road, Kala Amb, Distt. Sirmour, H.P -173030",
+  "batch_no": "TG25-1814A",
+  "reason": "Failed Disintegration and Uniformity of weight",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ },
+ {
+  "drug_name": "Mecobalamin, Alpha Lipoic Acid, Vitamin B6, Folic Acid, Zinc Sulphate Monohydrate, Chromium Polynicotinate, Selenium Dioxide, Biotin And Inositol Tablets",
+  "manufacturer": "Linto Pharmaceuticals,\nR.S.No. 142/8, Sedarapet Main Road, Pathukannu Junction, Ramanathapuram Village, Villianur commune, Puducherry- 605 502",
+  "batch_no": "LP 108",
+  "reason": "Failed Assay (for Alpha Lipoic Acid)",
+  "event_date": "2026-01-01",
+  "ground_truth": {
+   "is_paper_failure": false,
+   "violates_rule_96": false,
+   "violates_sub_rule_7": false,
+   "violates_schedule_h2": false
+  }
+ }
+]

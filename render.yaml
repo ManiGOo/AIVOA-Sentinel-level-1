@@ -1,0 +1,21 @@
+# Render Blueprint — VIEW-ONLY deployment.
+# Serves the dashboard + read-only signal API. No worker, no Temporal,
+# no scraper/backfill/dispatch execution (enforced by VIEW_ONLY=1 in main.py).
+services:
+  - type: web
+    name: aivoa-sentinel-view
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    envVars:
+      # Set VIEW_ONLY, DATABASE_URL, GROQ_API_KEY in the Render dashboard.
+      # VIEW_ONLY=1 keeps this deploy read-only (no scraper/backfill/dispatch).
+      - key: VIEW_ONLY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
