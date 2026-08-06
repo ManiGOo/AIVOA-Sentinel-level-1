@@ -453,16 +453,79 @@ def _focused_excerpt(text: str, record_details: dict,
     return text[:head_len] + "\n...\n" + text[start:end]
 
 
+def _heuristic_web_classification(text: str, record_details: dict) -> dict:
+    """Deterministic relevance fallback used when the LLM classifier fails.
+
+    Keeps the dashboard honest: an article that demonstrably discusses the
+    manufacturer alongside a regulatory/quality signal is NEVER labelled
+    NOT RELEVANT. When there is no defensible signal, relevance_score stays
+    None so the UI shows UNSCORED instead of a confident "not relevant"."""
+    low = (text or "").lower()
+    mfr = (record_details.get("manufacturer") or "").strip()
+    drug = (record_details.get("drug_name") or "").strip()
+
+    mfr_clean = clean_company_name(PAREN.sub("", mfr)).lower().strip()
+    stop = {"ltd", "pvt", "limited", "private", "company", "co", "inc", "llc",
+            "pharma", "pharmaceutical", "pharmaceuticals", "laboratories",
+            "laboratory", "lab", "labs", "formulation", "formulations",
+            "biotech", "remedies", "manufacturing", "works", "industries"}
+    tokens = [t for t in mfr_clean.split() if t not in stop and len(t) >= 4]
+    company_hit = bool(mfr_clean and (mfr_clean in low or any(t in low for t in tokens)))
+
+    drug_clean = re.sub(r"\s+", " ", drug.lower()).strip()
+    drug_hit = bool(drug_clean and (drug_clean in low or " ".join(drug_clean.split()[:2]) in low))
+
+    kw = {
+        "closure": ["closure", "closed", "shut down", "shutdown", "cease manufacturing",
+                    "cease production", "stop manufacturing", "stop production", "plant closure"],
+        "licence_suspension": ["suspension", "suspended", "licence cancelled", "licence revoked",
+                               "license cancelled", "license revoked", "gmp certificate",
+                               "gmp suspension", "withdraw approval"],
+        "recall": ["recall", "voluntary recall", "market withdrawal", "withdrawn from the market",
+                   "withdraw the product"],
+        "warning_letter": ["warning letter", "import alert", "notice of violation", "form 483",
+                           "regulatory notice"],
+        "prosecution": ["prosecution", "prosecuted", "court", "convicted", "charged", "fined", "criminal"],
+    }
+    matched = {k: [kwd for kwd in words if kwd in low] for k, words in kw.items()}
+    hits = sum(bool(v) for v in matched.values())
+
+    if not company_hit or hits == 0:
+        return {"relevance_score": None, "is_relevant": False, "corroborates_failure": False,
+                "is_paper_qms": False, "recall_action": False, "severity": "low",
+                "regulatory_action": "none",
+                "summary": "Heuristic (LLM unavailable): no company + regulatory signal found.",
+                "heuristic": True}
+
+    severity = ("high" if any(matched[k] for k in ("closure", "licence_suspension", "prosecution"))
+                else ("medium" if any(matched[k] for k in ("recall", "warning_letter")) else "low"))
+    reg_priority = ["closure", "licence_suspension", "recall", "warning_letter", "prosecution"]
+    reg_action = next((k for k in reg_priority if matched[k]), "none")
+    score = 70 + (10 if drug_hit else 0) + (10 if severity == "high" else 0)
+    score = min(95, score)
+    return {
+        "relevance_score": score,
+        "is_relevant": True,
+        "corroborates_failure": bool(matched["recall"] or matched["closure"] or matched["licence_suspension"]),
+        "is_paper_qms": False,
+        "recall_action": bool(matched["recall"]),
+        "severity": severity,
+        "regulatory_action": reg_action,
+        "summary": "Heuristic (LLM unavailable): article links the manufacturer to a regulatory/quality signal.",
+        "heuristic": True,
+    }
+
+
 def classify_web_evidence(article_text: str, record_details: dict) -> dict:
     """Classify a fetched web article for relevance, paper-QMS implications and
     the type of regulatory action it describes."""
     if not GROQ_API_KEY.startswith("gsk_"):
-        return {"relevance_score": 0, "is_relevant": False, "corroborates_failure": False, 
+        return {"relevance_score": None, "is_relevant": False, "corroborates_failure": False, 
                 "is_paper_qms": False, "recall_action": False, "severity": "low",
                 "regulatory_action": "none", "summary": "LLM unavailable"}
     
     if not article_text:
-         return {"relevance_score": 0, "is_relevant": False, "corroborates_failure": False, 
+         return {"relevance_score": None, "is_relevant": False, "corroborates_failure": False, 
                 "is_paper_qms": False, "recall_action": False, "severity": "low",
                 "regulatory_action": "none", "summary": "No text"}
                 
@@ -518,13 +581,11 @@ def classify_web_evidence(article_text: str, record_details: dict) -> dict:
             ],
             response_format={"type": "json_object"},
             temperature=0.0,
-            max_tokens=512,
+            max_tokens=1024,
         )
         return json.loads(completion.choices[0].message.content)
     except Exception as e:
         print(f"Groq classification error: {e}")
-    
-    return {"relevance_score": 0, "is_relevant": False, "corroborates_failure": False, 
-            "is_paper_qms": False, "recall_action": False, "severity": "low",
-            "regulatory_action": "none", "summary": "Error parsing"}
+
+    return _heuristic_web_classification(article_text, record_details)
 
