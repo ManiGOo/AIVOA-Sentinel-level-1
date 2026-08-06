@@ -118,6 +118,10 @@
         if (existing) existing.remove();
 
         const cached = (window.__webEv || {})[eventId];
+        const reRunHtml = window.VIEW_ONLY ? '' :
+            '<button onclick="searchWeb(\'' + esc(eventId) + '\')" ' +
+            'style="font-size:12px;font-weight:600;padding:6px 12px;border-radius:8px;border:0;cursor:pointer;' +
+            'background:rgba(13,148,136,0.2);color:#5eead4;display:inline-flex;align-items:center;gap:6px">' + ICONS.refresh + 'Re-run search</button>';
 
         const overlay = document.createElement('div');
         overlay.id = 'webModal';
@@ -144,9 +148,7 @@
             'padding:12px 20px;border-top:1px solid #1e293b">' +
             '<span id="webModalCount" style="font-size:12px;color:#64748b"></span>' +
             '<div style="display:flex;align-items:center;gap:8px">' +
-            '<button onclick="searchWeb(\'' + esc(eventId) + '\')" ' +
-            'style="font-size:12px;font-weight:600;padding:6px 12px;border-radius:8px;border:0;cursor:pointer;' +
-            'background:rgba(13,148,136,0.2);color:#5eead4;display:inline-flex;align-items:center;gap:6px">' + ICONS.refresh + 'Re-run search</button>' +
+            reRunHtml +
             '<button onclick="closeWebEvidenceModal()" ' +
             'style="font-size:12px;font-weight:600;padding:6px 12px;border-radius:8px;border:0;cursor:pointer;' +
             'background:#1e293b;color:#cbd5e1">Close</button>' +

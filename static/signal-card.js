@@ -249,8 +249,8 @@
                     ${enrichmentHtml(signal)}
                 </div>
 
-                ${this._viewOnly ? '' : `
                 <div class="mt-auto space-y-2">
+                    ${this._viewOnly ? '' : `
                     <button onclick="approveCampaign('${signal.event_id}')" class="w-full py-2 bg-slate-700 hover:bg-green-600 transition-colors rounded text-sm font-semibold flex items-center justify-center gap-2">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
@@ -270,7 +270,7 @@
                         </svg>
                         Search Web
                     </button>
-                    <div id="webResult-${signal.event_id}" class="hidden"></div>
+                    <div id="webResult-${signal.event_id}" class="hidden"></div>`}
                     ${signal.web_evidence && signal.web_evidence.length ? `
                     <button onclick="showWebEvidenceModal('${signal.event_id}')" class="w-full py-2 bg-slate-800 hover:bg-slate-600 border border-slate-700 transition-colors rounded text-sm font-semibold flex items-center justify-center gap-2">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -278,7 +278,7 @@
                         </svg>
                         Web Evidence (${signal.web_evidence.length})
                     </button>` : ''}
-                </div>`}
+                </div>
             `;
         }
     }
