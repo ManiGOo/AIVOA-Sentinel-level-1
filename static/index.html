@@ -112,6 +112,14 @@
                 <div class="flex items-center gap-3">
                     <select id="yearFilter" onchange="fetchSignals()" class="px-3 py-2 bg-slate-800/70 border border-slate-700 rounded-lg text-sm text-slate-300 focus:outline-none focus:border-blue-500">
                         <option value="">All Years</option>
+                        <option value="2026">2026</option>
+                        <option value="2025">2025</option>
+                        <option value="2024">2024</option>
+                        <option value="2023">2023</option>
+                        <option value="2022">2022</option>
+                        <option value="2021">2021</option>
+                        <option value="2020">2020</option>
+                        <option value="2019">2019</option>
                     </select>
                     <button onclick="fetchSignals()" class="text-sm text-slate-400 hover:text-white flex items-center gap-1 transition-colors">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -145,6 +153,11 @@
                 <span id="filterCount" class="text-xs text-slate-400 ml-auto"></span>
             </div>
 
+            <div id="yearRangeBanner" class="hidden mb-4 px-4 py-2 rounded-lg border border-sky-700/50 bg-sky-900/30 text-sky-300 text-sm flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                <span id="yearRangeText"></span>
+            </div>
+
             <div id="signalsContainer" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 <!-- Data will be populated here -->
                 <div class="col-span-full text-center py-10 text-slate-500">
@@ -175,7 +188,9 @@
         function buildQueryUrl() {
             const params = new URLSearchParams();
             const year = document.getElementById('yearFilter').value;
-            if (year) params.set('year', year);
+            const q = document.getElementById('searchInput').value.trim();
+            // Search is year-agnostic: it scans all years, so drop the year filter while a query is active.
+            if (year && !q) params.set('year', year);
             params.set('page', currentPage);
             params.set('page_size', PAGE_SIZE);
             const ms = parseInt(document.getElementById('filterMinScore').value || '0', 10);
@@ -187,7 +202,6 @@
             if (document.getElementById('filterRule96').checked) params.set('rule_96', 'true');
             if (document.getElementById('filterSubRule7').checked) params.set('sub_rule_7', 'true');
             if (document.getElementById('filterH2').checked) params.set('schedule_h2', 'true');
-            const q = document.getElementById('searchInput').value.trim();
             if (q) params.set('q', q);
             return '/api/v1/signals/high-priority?' + params.toString();
         }
@@ -346,7 +360,6 @@
         }
 
         async function fetchSignals() {
-            const yearSelect = document.getElementById('yearFilter');
             try {
                 const response = await fetch(buildQueryUrl());
                 const data = await response.json();
@@ -358,12 +371,14 @@
                 paperCount = data.paper_count || 0;
                 currentPage = Math.min(Math.max(data.page || 1, 1), totalPages);
 
-                const currentValue = yearSelect.value;
-                const years = [...new Set(items.map(s => (s.event_date || '').slice(0, 4)).filter(Boolean))].sort((a, b) => b - a);
-                if (years.length > 0) {
-                    yearSelect.innerHTML = '<option value="">All Years</option>' +
-                        years.map(y => `<option value="${y}">${y}</option>`).join('');
-                    if (currentValue && years.includes(currentValue)) yearSelect.value = currentValue;
+                const years = [...new Set(items.map(s => (s.event_date || '').slice(0, 4)).filter(Boolean))].sort();
+                const banner = document.getElementById('yearRangeBanner');
+                const bannerText = document.getElementById('yearRangeText');
+                if (years.length > 1) {
+                    bannerText.textContent = `Combined data from ${years[0]} to ${years[years.length - 1]} (${years.length} years, across ${totalCount} signals)`;
+                    banner.classList.remove('hidden');
+                } else {
+                    banner.classList.add('hidden');
                 }
 
                 renderCards();

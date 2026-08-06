@@ -1,7 +1,7 @@
 import os
 import uuid
 from datetime import datetime
-from sqlalchemy import create_engine, Column, String, Integer, Date, Boolean, MetaData, text
+from sqlalchemy import create_engine, Column, String, Integer, Date, Boolean, MetaData, Text, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -30,8 +30,8 @@ class RegulatoryEvent(Base):
     raw_details = Column(JSONB)      # The raw JSON from CDSCO
     llm_analysis = Column(JSONB, nullable=True) # The JSON output from Groq/Qwen
     score = Column(Integer, default=0)
-    reporting_source = Column(String(50), nullable=True, server_default='')
-    reported_by = Column(String(100), nullable=True, server_default='')
+    reporting_source = Column(Text, nullable=True, server_default='')
+    reported_by = Column(Text, nullable=True, server_default='')
     
     event_date = Column(Date, default=datetime.utcnow)
 
@@ -50,6 +50,8 @@ def init_db():
         "ADD COLUMN IF NOT EXISTS reporting_source VARCHAR(50) DEFAULT ''",
         "ALTER TABLE sdr_data.regulatory_events "
         "ADD COLUMN IF NOT EXISTS reported_by VARCHAR(100) DEFAULT ''",
+        "ALTER TABLE sdr_data.regulatory_events ALTER COLUMN reporting_source TYPE TEXT",
+        "ALTER TABLE sdr_data.regulatory_events ALTER COLUMN reported_by TYPE TEXT",
     ]
     for sql in migrations:
         with engine.connect() as conn:
