@@ -527,8 +527,8 @@
 
         function webEvidenceItemHtml(e) {
             const cls = e.classification || {};
-            const rel = cls.relevance_score != null ? Math.round(cls.relevance_score * 100) + '%'
-                : (e.relevance_score ? Math.round(e.relevance_score * 100) + '%' : '—');
+            const rel = cls.relevance_score != null ? Math.round(cls.relevance_score) + '%'
+                : (e.relevance_score ? Math.round(e.relevance_score) + '%' : '—');
             const badge = cls.is_paper_qms || e.is_paper_qms
                 ? '<span class="ml-1 px-1.5 py-0.5 rounded bg-yellow-900/60 text-yellow-300 font-semibold">PAPER-QMS</span>'
                 : ((cls.is_relevant != null ? cls.is_relevant : e.is_relevant) ? '<span class="ml-1 px-1.5 py-0.5 rounded bg-teal-900/60 text-teal-300 font-semibold">RELEVANT</span>' : '');
