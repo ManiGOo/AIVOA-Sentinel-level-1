@@ -59,6 +59,7 @@ class RegulatorySignalResponse(BaseModel):
     regulator: str
     event_type: str
     score: int
+    max_possible_score: int = 0
     company_name: str = ""
     llm_analysis: dict
     raw_details: dict
@@ -239,6 +240,8 @@ def _build_signal_card(event, counts, checks_by_key, evidence_by_key, web_by_key
 
     web_bonus = _web_evidence_bonus(card_web_evidence)
     new_score = round((base + paper_bonus + mandate_bonus) * recency) + repeat_bonus + web_bonus
+    max_base = 40 if event.event_type == 'SPURIOUS_DRUG' else 20
+    max_possible = round((max_base + 30 + 20) * recency) + 30 + 25
 
     event.paper_evidence_class = pa["class"]
     event.paper_confidence = pa["confidence"]
@@ -250,6 +253,7 @@ def _build_signal_card(event, counts, checks_by_key, evidence_by_key, web_by_key
         "regulator": event.regulator,
         "event_type": event.event_type,
         "score": new_score,
+        "max_possible_score": max_possible,
         "company_name": clean_company_name((event.raw_details or {}).get('manufacturer', '')),
         "llm_analysis": analysis,
         "raw_details": event.raw_details or {},
@@ -268,6 +272,7 @@ def _build_signal_card(event, counts, checks_by_key, evidence_by_key, web_by_key
             "prior_events": prior,
             "web_evidence_bonus": web_bonus,
             "web_evidence_sources": len(card_web_evidence),
+            "max_possible": max_possible,
         },
         "enrichment": {
             "checks": latest_checks,

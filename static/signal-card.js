@@ -131,6 +131,7 @@
                     <div class="flex justify-between gap-2"><span>Repeat offender (${sb.prior_events ?? 0} prior)</span><span class="text-white">+${sb.repeat_offender_bonus ?? 0}</span></div>
                     <div class="flex justify-between gap-2"><span>Web Evidence (${sb.web_evidence_sources ?? 0} src)</span><span class="text-white">+${sb.web_evidence_bonus ?? 0}</span></div>
                     <div class="border-t border-slate-700 mt-2 pt-1 flex justify-between gap-2 font-bold text-white"><span>Total</span><span>${signal.score}</span></div>
+                    <div class="flex justify-between gap-2 text-slate-500"><span>Max possible (recency-adjusted)</span><span>${sb.max_possible ?? 100}</span></div>
                 </div>
             </div>
         `;
@@ -210,7 +211,7 @@
                             ${esc(signal.event_type)}
                         </span>
                         <div class="relative flex flex-col items-end group cursor-help">
-                            <span class="text-3xl font-bold ${scoreColor}">${signal.score}</span>
+                            <span class="text-3xl font-bold ${scoreColor}">${signal.score}<span class="text-base font-semibold text-slate-500"> / ${signal.max_possible_score ?? 100}</span></span>
                             <span class="text-xs text-slate-500 uppercase tracking-wide">Lead Score</span>
                             ${scoreBreakdownHtml(signal)}
                         </div>
