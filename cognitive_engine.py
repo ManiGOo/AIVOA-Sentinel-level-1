@@ -247,6 +247,67 @@ Respond ONLY with a valid JSON object with a single key: {{"labels": ["manual_pr
     return labels
 
 
+def classify_schedule_m_gap_batch(items: List[dict], batch_size: int = 20,
+                                  on_chunk=None) -> dict:
+    """Classify each CDSCO NSQ notice into the revised Schedule M Part A
+    requirement area its failure exposes. Lightweight, gap-area-only, so
+    backfills run fast. Returns {index: label}.
+
+    Labels:
+    - process_control        dissolution, assay, content uniformity, weight
+                             variation/uniformity of weight, disintegration,
+                             hardness, friability, dose uniformity.
+    - contamination_control  microbial/bacterial contamination, sterility,
+                             endotoxin, pyrogen, particulate, moisture.
+    - stability              related substances, impurities, degradation
+                             products, assay drift.
+    - labeling_packaging     label claim, labeling, packaging/container issues.
+    - data_integrity         explicit documentation / batch-record / data issues.
+    - unclear                generic or insufficient text.
+    """
+    if not GROQ_API_KEY.startswith("gsk_"):
+        return {i: "" for i in range(len(items))}
+
+    labels = {}
+    total_chunks = (len(items) + batch_size - 1) // batch_size
+    for start in range(0, len(items), batch_size):
+        chunk = items[start:start + batch_size]
+        prompt = f"""Map each CDSCO NSQ failure notice below to the revised Schedule M (GMP, India) Part A requirement area its failure exposes.
+process_control = dissolution, assay, content uniformity, weight variation or uniformity of weight, disintegration, hardness, friability, dose uniformity.
+contamination_control = microbial or bacterial contamination, sterility, endotoxin, pyrogen, particulate, moisture.
+stability = related substances, impurities, degradation products.
+labeling_packaging = label claim, labeling, packaging or container issues.
+data_integrity = explicit documentation, batch record or data reliability issues.
+unclear = generic or insufficient text (e.g. "Content", "The sample does not conform to the IP", "Description").
+Base the label only on the reason text. Prefer process_control when both apply. Keep labels in the exact same order as the input.
+Inputs:
+{json.dumps([{"drug_name": (i.get("drug_name","") or "")[:120], "reason": (i.get("reason","") or "")[:300]} for i in chunk])}
+Respond ONLY with a valid JSON object with a single key: {{"labels": ["process_control|contamination_control|stability|labeling_packaging|data_integrity|unclear", ...]}}"""
+        try:
+            completion = client.chat.completions.create(
+                model="openai/gpt-oss-120b",
+                messages=[
+                    {"role": "system", "content": "You output strict JSON."},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.0,
+                max_tokens=2048,
+            )
+            data = json.loads(completion.choices[0].message.content)
+            out = data.get("labels", [])
+            if len(out) != len(chunk):
+                out = out + [""] * (len(chunk) - len(out))
+        except Exception as e:  # noqa: BLE001
+            print(f"Groq schedule-M-gap error: {e}", flush=True)
+            out = [""] * len(chunk)
+        for j, label in enumerate(out):
+            labels[start + j] = label
+        if on_chunk is not None:
+            on_chunk((start // batch_size) + 1, total_chunks)
+    return labels
+
+
 def extract_company_names_batch(raw_names: List[str]) -> List[str]:
     """Clean CDSCO manufacturer strings into trading names, preserving order.
 

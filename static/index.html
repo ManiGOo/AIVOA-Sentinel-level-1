@@ -152,6 +152,15 @@
                 <label class="flex items-center gap-2 text-sm text-slate-300 cursor-pointer"><input type="checkbox" id="filterRule96" onchange="resetAndRender()" class="accent-red-500 w-4 h-4"><span title="2026 mandate — QR code/serialization on APIs" class="px-2 py-0.5 text-[10px] rounded border bg-red-900/50 text-red-300 border-red-700/50">Rule 96</span></label>
                 <label class="flex items-center gap-2 text-sm text-slate-300 cursor-pointer"><input type="checkbox" id="filterSubRule7" onchange="resetAndRender()" class="accent-orange-500 w-4 h-4"><span title="2026 mandate — excipient controls for FDFs" class="px-2 py-0.5 text-[10px] rounded border bg-orange-900/50 text-orange-300 border-orange-700/50">Sub-Rule 7</span></label>
                 <label class="flex items-center gap-2 text-sm text-slate-300 cursor-pointer"><input type="checkbox" id="filterH2" onchange="resetAndRender()" class="accent-purple-500 w-4 h-4"><span title="2026 mandate — antimicrobial track-and-trace" class="px-2 py-0.5 text-[10px] rounded border bg-purple-900/50 text-purple-300 border-purple-700/50">Schedule H2</span></label>
+                <select id="filterScheduleMGap" onchange="resetAndRender()" class="px-3 py-2 bg-slate-800/70 border border-slate-700 rounded-lg text-sm text-slate-300 focus:outline-none focus:border-blue-500">
+                    <option value="">All Schedule M Gaps</option>
+                    <option value="process_control">Schedule M · Process Control</option>
+                    <option value="contamination_control">Schedule M · Contamination Control</option>
+                    <option value="stability">Schedule M · Stability</option>
+                    <option value="labeling_packaging">Schedule M · Labeling/Packaging</option>
+                    <option value="data_integrity">Schedule M · Data Integrity</option>
+                    <option value="unclear">Schedule M · Unclear</option>
+                </select>
                 <label class="flex items-center gap-2 text-sm text-slate-300">
                     Min Score
                     <input type="number" id="filterMinScore" oninput="resetAndRender()" value="0" min="0" max="100" class="w-20 px-2 py-1.5 bg-slate-800/70 border border-slate-700 rounded-lg text-sm text-slate-300 focus:outline-none focus:border-blue-500">
@@ -213,6 +222,8 @@
             if (document.getElementById('filterRule96').checked) params.set('rule_96', 'true');
             if (document.getElementById('filterSubRule7').checked) params.set('sub_rule_7', 'true');
             if (document.getElementById('filterH2').checked) params.set('schedule_h2', 'true');
+            const smg = document.getElementById('filterScheduleMGap').value;
+            if (smg) params.set('schedule_m_gap', smg);
             if (q) params.set('q', q);
             return '/api/v1/signals/high-priority?' + params.toString();
         }

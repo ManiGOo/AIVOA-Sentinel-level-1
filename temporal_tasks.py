@@ -9,7 +9,7 @@ with workflow.unsafe.imports_passed_through():
     from bs4 import BeautifulSoup
     from sqlalchemy import func
     from db_setup import SessionLocal, RegulatoryEvent, RegulatoryEvidence, EnrichmentCheck
-    from cognitive_engine import analyze_cdsco_failure_batch, classify_failure_modes_batch
+    from cognitive_engine import analyze_cdsco_failure_batch, classify_failure_modes_batch, classify_schedule_m_gap_batch
     from paper_category import assess_paper_category
     from company_names import clean_company_name
 
@@ -591,6 +591,116 @@ class FailureModeBackfillWorkflow:
         self._phase = "applying"
         result = await workflow.execute_activity(
             apply_failure_modes,
+            {"unique": unique_list, "labels": labels_list},
+            start_to_close_timeout=timedelta(minutes=15),
+            retry_policy=RetryPolicy(maximum_attempts=2),
+        )
+        self._updated = result["updated"]
+        self._final = result
+        self._finished = True
+        self._phase = "done"
+        return result
+
+
+@activity.defn
+async def classify_schedule_m_gap_activity(chunk: list) -> dict:
+    """One LLM batch (<=20 items). Runs in a thread so the blocking Groq call
+    cannot freeze the worker event loop."""
+    labels = await asyncio.to_thread(classify_schedule_m_gap_batch, chunk)
+    return {"labels": [labels.get(i, "") for i in range(len(chunk))]}
+
+
+@activity.defn
+def apply_schedule_m_gaps(data: dict) -> dict:
+    """Merge the classified Schedule M gap areas into every event's
+    llm_analysis and commit every 500. Plain def: blocking DB work must run in
+    the worker's thread pool, not on the event loop (async def + blocking calls
+    would freeze queries/tasks)."""
+    from collections import Counter
+    unique_list = data["unique"]
+    labels_list = data["labels"]  # aligned with unique_list
+    label_by_key = {
+        (u["manufacturer"], u["drug_name"], u["reason"]): labels_list[i]
+        for i, u in enumerate(unique_list)
+    }
+    db = SessionLocal()
+    try:
+        events = db.query(RegulatoryEvent).all()
+        updated = 0
+        dist = Counter()
+        commits = []
+        for ev in events:
+            rd = ev.raw_details or {}
+            key = (rd.get("manufacturer", ""), rd.get("drug_name", ""), rd.get("reason", ""))
+            gap = label_by_key.get(key, "")
+            analysis = dict(ev.llm_analysis or {})
+            if gap:
+                analysis["schedule_m_gap"] = gap
+            ev.llm_analysis = analysis
+            dist[gap or "unknown"] += 1
+            updated += 1
+            if updated % 500 == 0:
+                db.commit()
+                commits.append(dict(dist))
+        db.commit()
+        return {"updated": updated, "schedule_m_gap_distribution": dict(dist),
+                "commits": commits}
+    finally:
+        db.close()
+
+
+@workflow.defn
+class ScheduleMGapBackfillWorkflow:
+    def __init__(self):
+        self._phase = "idle"
+        self._events_total = 0
+        self._unique_total = 0
+        self._chunks_total = 0
+        self._chunks_done = 0
+        self._updated = 0
+        self._finished = False
+        self._final = None
+
+    @workflow.query
+    def get_progress(self) -> dict:
+        return {
+            "phase": self._phase,
+            "events_total": self._events_total,
+            "unique_total": self._unique_total,
+            "chunks_total": self._chunks_total,
+            "chunks_done": self._chunks_done,
+            "updated": self._updated,
+            "finished": self._finished,
+            "final": self._final,
+        }
+
+    @workflow.run
+    async def run(self) -> dict:
+        self._phase = "loading"
+        loaded = await workflow.execute_activity(
+            load_backfill_candidates,
+            start_to_close_timeout=timedelta(minutes=10),
+        )
+        unique_list = loaded["unique"]
+        self._events_total = loaded["events_total"]
+        self._unique_total = len(unique_list)
+        self._phase = "classifying"
+        self._chunks_total = (len(unique_list) + BACKFILL_BATCH - 1) // BACKFILL_BATCH
+        labels_list = [""] * len(unique_list)
+        for start in range(0, len(unique_list), BACKFILL_BATCH):
+            chunk = unique_list[start:start + BACKFILL_BATCH]
+            res = await workflow.execute_activity(
+                classify_schedule_m_gap_activity,
+                args=[chunk],
+                start_to_close_timeout=timedelta(minutes=3),
+                retry_policy=RetryPolicy(maximum_attempts=3),
+            )
+            for j, label in enumerate(res["labels"]):
+                labels_list[start + j] = label
+            self._chunks_done += 1
+        self._phase = "applying"
+        result = await workflow.execute_activity(
+            apply_schedule_m_gaps,
             {"unique": unique_list, "labels": labels_list},
             start_to_close_timeout=timedelta(minutes=15),
             retry_policy=RetryPolicy(maximum_attempts=2),

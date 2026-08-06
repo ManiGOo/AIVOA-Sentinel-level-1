@@ -234,13 +234,14 @@ def get_high_priority_signals(
     rule_96: bool = False,
     sub_rule_7: bool = False,
     schedule_h2: bool = False,
+    schedule_m_gap: str = None,
     db: Session = Depends(get_db),
 ):
     """
     Paginated signals with server-side filtering.
     Params: min_score, year, page, page_size, q (substring search across
     drug/manufacturer/address/batch/reason/type), event_type, is_paper,
-    rule_96, sub_rule_7, schedule_h2.
+    rule_96, sub_rule_7, schedule_h2, schedule_m_gap.
     """
     page = max(page, 1)
     page_size = min(max(page_size, 1), 200)
@@ -262,6 +263,8 @@ def get_high_priority_signals(
         query = query.filter(RegulatoryEvent.llm_analysis['violates_sub_rule_7'].astext == 'true')
     if schedule_h2:
         query = query.filter(RegulatoryEvent.llm_analysis['violates_schedule_h2'].astext == 'true')
+    if schedule_m_gap:
+        query = query.filter(RegulatoryEvent.llm_analysis['schedule_m_gap'].astext == schedule_m_gap)
     if q:
         like = f"%{q.strip().lower()}%"
         query = query.filter(or_(

@@ -34,6 +34,14 @@
         if (a?.violates_rule_96) tags.push({ label: 'Rule 96', cls: 'bg-red-900/50 text-red-300 border-red-700/50' });
         if (a?.violates_sub_rule_7) tags.push({ label: 'Sub-Rule 7', cls: 'bg-orange-900/50 text-orange-300 border-orange-700/50' });
         if (a?.violates_schedule_h2) tags.push({ label: 'Schedule H2', cls: 'bg-purple-900/50 text-purple-300 border-purple-700/50' });
+        const SMG = {
+            process_control: 'Schedule M · Process Control',
+            contamination_control: 'Schedule M · Contamination Control',
+            stability: 'Schedule M · Stability',
+            labeling_packaging: 'Schedule M · Labeling/Packaging',
+            data_integrity: 'Schedule M · Data Integrity',
+        };
+        if (a?.schedule_m_gap && SMG[a.schedule_m_gap]) tags.push({ label: SMG[a.schedule_m_gap], cls: 'bg-teal-900/50 text-teal-300 border-teal-700/50' });
         return tags;
     }
 
