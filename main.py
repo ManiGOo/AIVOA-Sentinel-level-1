@@ -275,6 +275,12 @@ def _build_signal_card(event, counts, checks_by_key, evidence_by_key, web_by_key
             "prior_events": prior,
             "web_evidence_bonus": web_bonus,
             "web_evidence_sources": len(card_web_evidence),
+            "max_base": max_base,
+            "max_paper_bonus": 30,
+            "max_mandate_bonus": mandate_bonus,
+            "max_recency_weight": recency,
+            "max_repeat_bonus": repeat_bonus,
+            "max_web_bonus": 25,
             "max_possible": max_possible,
         },
         "enrichment": {

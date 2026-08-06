@@ -124,14 +124,13 @@
             <div class="pointer-events-none absolute right-0 top-full mt-2 z-50 hidden group-hover:block w-64 p-3 bg-slate-900 border border-slate-700 rounded-lg shadow-xl">
                 <p class="text-xs text-slate-400 uppercase tracking-wider mb-2">Score Breakdown</p>
                 <div class="space-y-1 text-xs text-slate-300">
-                    <div class="flex justify-between gap-2"><span>Base (${signal.event_type})</span><span class="text-white">+${sb.base ?? 0}</span></div>
-                    <div class="flex justify-between gap-2"><span>Paper QMS (${sb.paper_bonus_class ?? 'none'})</span><span class="text-white">+${sb.paper_bonus ?? 0}</span></div>
-                    <div class="flex justify-between gap-2"><span>2026 Mandate${mandateTxt ? ' · ' + mandateTxt : ''}</span><span class="text-white">+${sb.mandate_bonus ?? 0}</span></div>
-                    <div class="flex justify-between gap-2"><span>Recency</span><span class="text-white">${fmt(sb.recency_weight)}</span></div>
-                    <div class="flex justify-between gap-2"><span>Repeat offender (${sb.prior_events ?? 0} prior)</span><span class="text-white">+${sb.repeat_offender_bonus ?? 0}</span></div>
-                    <div class="flex justify-between gap-2"><span>Web Evidence (${sb.web_evidence_sources ?? 0} src)</span><span class="text-white">+${sb.web_evidence_bonus ?? 0}</span></div>
-                    <div class="border-t border-slate-700 mt-2 pt-1 flex justify-between gap-2 font-bold text-white"><span>Total</span><span>${signal.score}</span></div>
-                    <div class="flex justify-between gap-2 text-slate-500"><span>Max possible (grounded)</span><span>${sb.max_possible ?? 100}</span></div>
+                    <div class="flex justify-between gap-2"><span>Base (${signal.event_type})</span><span class="text-white">+${sb.base ?? 0}<span class="text-slate-500"> / ${sb.max_base ?? sb.base ?? 0}</span></span></div>
+                    <div class="flex justify-between gap-2"><span>Paper QMS (${sb.paper_bonus_class ?? 'none'})</span><span class="text-white">+${sb.paper_bonus ?? 0}<span class="text-slate-500"> / ${sb.max_paper_bonus ?? 30}</span></span></div>
+                    <div class="flex justify-between gap-2"><span>2026 Mandate${mandateTxt ? ' · ' + mandateTxt : ''}</span><span class="text-white">+${sb.mandate_bonus ?? 0}<span class="text-slate-500"> / ${sb.max_mandate_bonus ?? 0}</span></span></div>
+                    <div class="flex justify-between gap-2"><span>Recency</span><span class="text-white">${fmt(sb.recency_weight)}<span class="text-slate-500"> / ${fmt(sb.max_recency_weight ?? sb.recency_weight)}</span></span></div>
+                    <div class="flex justify-between gap-2"><span>Repeat offender (${sb.prior_events ?? 0} prior)</span><span class="text-white">+${sb.repeat_offender_bonus ?? 0}<span class="text-slate-500"> / ${sb.max_repeat_bonus ?? 30}</span></span></div>
+                    <div class="flex justify-between gap-2"><span>Web Evidence (${sb.web_evidence_sources ?? 0} src)</span><span class="text-white">+${sb.web_evidence_bonus ?? 0}<span class="text-slate-500"> / ${sb.max_web_bonus ?? 25}</span></span></div>
+                    <div class="border-t border-slate-700 mt-2 pt-1 flex justify-between gap-2 font-bold text-white"><span>Total</span><span>${signal.score}<span class="text-slate-500"> / ${sb.max_possible ?? 100}</span></span></div>
                 </div>
             </div>
         `;
