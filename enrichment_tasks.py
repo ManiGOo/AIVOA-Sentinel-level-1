@@ -5,7 +5,7 @@ import asyncio
 with workflow.unsafe.imports_passed_through():
     import os
     from sqlalchemy import func
-    from db_setup import SessionLocal, RegulatoryEvidence
+    from db_setup import SessionLocal, RegulatoryEvidence, EnrichmentCheck
     from adapters import REGULATORY_SOURCES
     from cognitive_engine import analyze_regulatory_finding
     from company_names import clean_company_name, looks_like_company, clean_company_names_batch, strip_legal_suffix
@@ -14,9 +14,12 @@ with workflow.unsafe.imports_passed_through():
 PAPER_QMS_WEIGHT = 40
 
 
-def _save_findings(findings) -> tuple[int, int]:
+def _save_findings(findings, checks) -> tuple[int, int]:
+    """Persist evidence rows + one enrichment_checks row per firm (recorded
+    even when a firm yields no findings)."""
     inserted = 0
     skipped = 0
+    inserted_by_mfr = {}
     db = SessionLocal()
     try:
         for f in findings:
@@ -42,6 +45,11 @@ def _save_findings(findings) -> tuple[int, int]:
                 fetched_at=datetime.utcnow(),
             ))
             inserted += 1
+            inserted_by_mfr[f.mfr_key] = inserted_by_mfr.get(f.mfr_key, 0) + 1
+        for c in checks:
+            if inserted_by_mfr.get(c["mfr_key"]):
+                c = {**c, "inserted_count": inserted_by_mfr[c["mfr_key"]]}
+            db.add(EnrichmentCheck(**c))
         db.commit()
     finally:
         db.close()
@@ -86,6 +94,15 @@ async def fetch_external_evidence(firm_names: list[str], source: str = "fda",
             errors.append(f"llm_clean: {type(e).__name__}: {e}")
     skipped_firms = [raw for raw in firm_names if not any(raw == r for _, r in plans)]
 
+    # per-firm stats keyed by mfr_key
+    raw_by_key = {}
+    firm_stats = {}
+    for search_name, raw in plans:
+        key = mfr_key(raw)
+        raw_by_key[key] = raw
+        firm_stats[key] = {"searched": search_name, "findings": 0, "paper": 0,
+                           "error": ""}
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -94,6 +111,7 @@ async def fetch_external_evidence(firm_names: list[str], source: str = "fda",
                 if search_name.lower() in seen:
                     continue
                 seen.add(search_name.lower())
+                key = mfr_key(raw)
                 try:
                     queries = [search_name]
                     stripped = strip_legal_suffix(search_name)
@@ -105,7 +123,7 @@ async def fetch_external_evidence(firm_names: list[str], source: str = "fda",
                         if found:
                             break
                     for f in found:
-                        f.mfr_key = mfr_key(raw)
+                        f.mfr_key = key
                         if classify:
                             verdict = await asyncio.to_thread(
                                 analyze_regulatory_finding, f.evidence_text, search_name)
@@ -114,12 +132,39 @@ async def fetch_external_evidence(firm_names: list[str], source: str = "fda",
                             f.paper_qms_score = PAPER_QMS_WEIGHT \
                                 if verdict.get("is_paper_qms") else 0
                     findings.extend(found)
+                    firm_stats[key]["findings"] += len(found)
+                    firm_stats[key]["paper"] += sum(1 for f in found if f.paper_qms_score)
                 except Exception as e:  # noqa: BLE001
                     errors.append(f"{search_name}: {type(e).__name__}: {e}")
+                    firm_stats[key]["error"] = f"{type(e).__name__}: {e}"
         finally:
             await browser.close()
 
-    inserted, skipped = await asyncio.to_thread(_save_findings, findings)
+    checks = []
+    for key, stats in firm_stats.items():
+        checks.append({
+            "mfr_key": key,
+            "source": source,
+            "searched_name": stats["searched"],
+            "findings_count": stats["findings"],
+            "inserted_count": 0,
+            "paper_qms_count": stats["paper"],
+            "status": "error" if stats["error"] else "completed",
+            "error": stats["error"],
+        })
+    for raw in skipped_firms:
+        checks.append({
+            "mfr_key": mfr_key(raw),
+            "source": source,
+            "searched_name": "",
+            "findings_count": 0,
+            "inserted_count": 0,
+            "paper_qms_count": 0,
+            "status": "skipped",
+            "error": "no valid company name",
+        })
+
+    inserted, skipped = await asyncio.to_thread(_save_findings, findings, checks)
     return {
         "source": source,
         "firms": firm_names,

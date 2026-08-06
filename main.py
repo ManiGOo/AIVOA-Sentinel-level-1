@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from datetime import datetime, timezone
 import os
 
-from db_setup import SessionLocal, RegulatoryEvent
+from db_setup import SessionLocal, RegulatoryEvent, RegulatoryEvidence, EnrichmentCheck
 from temporal_tasks import MANDATE_START, recency_weight, repeat_offender_bonus, mfr_key
 
 app = FastAPI(title="AIVOA Project Sentinel - Signal API", version="1.0.0")
@@ -54,6 +54,7 @@ class RegulatorySignalResponse(BaseModel):
     reporting_source: str = ""
     reported_by: str = ""
     score_breakdown: dict = {}
+    enrichment: dict = {}
     
     class Config:
         from_attributes = True
@@ -135,11 +136,46 @@ def get_high_priority_signals(
         if key:
             counts[key] = counts.get(key, 0) + cnt
 
+    # Enrichment state for the page's manufacturers: latest check per source
+    # (including 'checked, no findings') + stored evidence rows.
+    page_keys = set()
+    for event in events:
+        mfr = (event.raw_details or {}).get('manufacturer', '')
+        key = mfr_key(mfr)
+        if key:
+            page_keys.add(key)
+
+    checks_by_key = {}
+    evidence_by_key = {}
+    if page_keys:
+        for c in db.query(EnrichmentCheck).filter(
+                EnrichmentCheck.mfr_key.in_(page_keys))\
+                .order_by(EnrichmentCheck.checked_at.desc()).all():
+            checks_by_key.setdefault(c.mfr_key, []).append(c)
+        for e in db.query(RegulatoryEvidence).filter(
+                RegulatoryEvidence.mfr_key.in_(page_keys))\
+                .order_by(RegulatoryEvidence.fetched_at.desc()).all():
+            evidence_by_key.setdefault(e.mfr_key, []).append(e)
+
     response = []
     for event in events:
         analysis = event.llm_analysis or {}
         mfr = (event.raw_details or {}).get('manufacturer', '')
-        prior = max(counts.get(mfr_key(mfr), 0) - 1, 0)
+        key = mfr_key(mfr)
+
+        # latest check per source (list is ordered checked_at desc)
+        latest_checks = {}
+        for c in checks_by_key.get(key, []):
+            if c.source not in latest_checks:
+                latest_checks[c.source] = {
+                    "status": c.status,
+                    "checked_at": str(c.checked_at) if c.checked_at else "",
+                    "searched_name": c.searched_name or "",
+                    "findings_count": c.findings_count or 0,
+                    "paper_qms_count": c.paper_qms_count or 0,
+                }
+
+        prior = max(counts.get(key, 0) - 1, 0)
         base = 40 if event.event_type == 'SPURIOUS_DRUG' else 20
         paper_bonus = 30 if analysis.get('is_paper_failure') else 0
         mandate_flags = [k for k in ('violates_rule_96', 'violates_sub_rule_7', 'violates_schedule_h2') if analysis.get(k)]
@@ -165,6 +201,20 @@ def get_high_priority_signals(
                 "recency_weight": recency,
                 "repeat_offender_bonus": repeat_bonus,
                 "prior_events": prior,
+            },
+            "enrichment": {
+                "checks": latest_checks,
+                "evidence": [
+                    {
+                        "source": e.source,
+                        "firm_name": e.firm_name,
+                        "finding_date": str(e.finding_date) if e.finding_date else "",
+                        "url": e.url or "",
+                        "paper_qms_score": e.paper_qms_score or 0,
+                        "evidence_quote": e.evidence_quote or "",
+                    }
+                    for e in evidence_by_key.get(key, [])
+                ],
             },
         })
     return {

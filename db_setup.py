@@ -60,6 +60,22 @@ class RegulatoryEvidence(Base):
     evidence_quote = Column(Text, default='')
     fetched_at = Column(DateTime, default=datetime.utcnow)
 
+class EnrichmentCheck(Base):
+    """Outcome of an enrichment run for one manufacturer + source — recorded
+    even when no findings are found, so cards can show 'checked, no findings'."""
+    __tablename__ = 'enrichment_checks'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    mfr_key = Column(Text, index=True)       # normalized key (matches regulatory_events)
+    source = Column(String(50))              # 'FDA' | 'EudraGMDP'
+    searched_name = Column(Text, default='') # cleaned name actually queried
+    findings_count = Column(Integer, default=0)
+    inserted_count = Column(Integer, default=0)
+    paper_qms_count = Column(Integer, default=0)
+    status = Column(String(20), default='completed')  # completed | error
+    error = Column(Text, default='')
+    checked_at = Column(DateTime, default=datetime.utcnow)
+
 def init_db():
     # 3. Create the schema if it doesn't exist using a raw connection
     with engine.connect() as conn:

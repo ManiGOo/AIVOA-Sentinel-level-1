@@ -253,6 +253,36 @@
             return tags;
         }
 
+        function enrichmentHtml(signal) {
+            const en = signal.enrichment || {};
+            const checks = en.checks || {};
+            const evidence = en.evidence || [];
+            if (!evidence.length && !Object.keys(checks).length) return '';
+            const src = s => ({ FDA: 'FDA', EudraGMDP: 'EudraGMDP' }[s] || s);
+            let html = '<div class="mb-5 pt-2 border-t border-slate-700/60">';
+            html += '<p class="text-xs text-slate-500 uppercase tracking-wider mb-1">External Enrichment</p>';
+            html += '<div class="flex flex-wrap gap-1.5">';
+            evidence.forEach(e => {
+                const q = e.paper_qms_score > 0 ? ' <span class="text-yellow-300">⚠ Paper-QMS</span>' : '';
+                html += `<a target="_blank" rel="noopener" href="${esc(e.url)}" class="px-2 py-0.5 text-[10px] rounded border border-green-700/50 bg-green-900/20 text-green-300 hover:bg-green-800/30">${esc(src(e.source))} · ${esc(e.finding_date || '')}${q}</a>`;
+            });
+            Object.entries(checks).forEach(([source, c]) => {
+                const date = (c.checked_at || '').slice(0, 10);
+                const f = c.findings_count || 0;
+                if (c.status === 'error') {
+                    html += `<span class="px-2 py-0.5 text-[10px] rounded border border-red-700/50 bg-red-900/20 text-red-300">${esc(src(source))} ✗ error${date ? ' (' + date + ')' : ''}</span>`;
+                } else if (c.status === 'skipped') {
+                    html += `<span class="px-2 py-0.5 text-[10px] rounded border border-slate-700 bg-slate-800/50 text-slate-400">${esc(src(source))} — not searchable</span>`;
+                } else if (f > 0) {
+                    html += `<span class="px-2 py-0.5 text-[10px] rounded border border-green-700/50 bg-green-900/20 text-green-300">${esc(src(source))} ✓ ${f} finding${f > 1 ? 's' : ''}${date ? ' (' + date + ')' : ''}</span>`;
+                } else {
+                    html += `<span class="px-2 py-0.5 text-[10px] rounded border border-slate-700 bg-slate-800/50 text-slate-400">${esc(src(source))} ✓ no findings${date ? ' (' + date + ')' : ''}</span>`;
+                }
+            });
+            html += '</div></div>';
+            return html;
+        }
+
         function scoreBreakdownHtml(signal) {
             const sb = signal.score_breakdown || {};
             const flagLabels = { violates_rule_96: 'Rule 96', violates_sub_rule_7: 'Sub-Rule 7', violates_schedule_h2: 'Schedule H2' };
@@ -345,6 +375,8 @@
                                 ${tags.map(t => `<span class="px-2 py-0.5 text-[10px] rounded border ${t.cls}">${t.label}</span>`).join('')}
                             </div>` : ''}
                         </div>
+
+                        ${enrichmentHtml(signal)}
                     </div>
 
                     ${VIEW_ONLY ? '' : `
@@ -513,16 +545,18 @@
                     box.innerHTML = '<p class="text-xs text-yellow-300">Enrichment still running in the background — refresh this card later.</p>';
                 } else {
                     renderEnrichResult(box, summaries);
+                    await fetchSignals();   // re-render cards with persisted check chips
                 }
             } catch (e) {
                 box.innerHTML = '<p class="text-xs text-red-400">Enrichment failed: ' + esc(e.message) + '</p>';
                 btn.disabled = false;
                 btn.innerHTML = original;
+                await fetchSignals();
             }
         }
 
         function renderEnrichResult(box, summaries) {
-            const agg = { findings: 0, inserted: 0, paper: 0, errors: [], searched: [] };
+            const agg = { findings: 0, inserted: 0, paper: 0, errors: [], searched: [], failed: false };
             Object.values(summaries).forEach(s => {
                 const sm = s.summary || {};
                 agg.findings += sm.findings || 0;
@@ -530,17 +564,24 @@
                 agg.paper += sm.paper_qms_findings || 0;
                 (sm.errors || []).forEach(e => agg.errors.push(e));
                 (sm.searched || []).forEach(n => { if (agg.searched.indexOf(n) < 0) agg.searched.push(n); });
+                if (['FAILED', 'TERMINATED', 'CANCELED'].includes(s.state)) {
+                    agg.failed = true;
+                    if (s.error) agg.errors.push(s.error);
+                }
             });
             let html = '';
-            if (agg.findings > 0) {
+            if (agg.failed && !agg.errors.length) {
+                agg.errors.push('enrichment workflow did not complete');
+            }
+            if (agg.errors.length) {
+                html = `<div class="p-2 rounded border border-red-700/50 bg-red-900/20 text-xs text-red-300">
+                    Enrichment error: ${esc(agg.errors.join('; '))}
+                </div>`;
+            } else if (agg.findings > 0) {
                 html = `<div class="p-2 rounded border border-green-700/50 bg-green-900/20 text-xs">
                     <p class="text-green-300 font-semibold">✓ ${agg.findings} external finding(s)${agg.inserted ? ` · ${agg.inserted} saved` : ''}</p>
                     ${agg.paper > 0 ? `<p class="mt-1 text-yellow-300 font-semibold">⚠ ${agg.paper} Paper-QMS flagged</p>` : ''}
                     <p class="mt-1 text-slate-400 break-all">Searched: ${esc(agg.searched.join(' · '))}</p>
-                </div>`;
-            } else if (agg.errors.length) {
-                html = `<div class="p-2 rounded border border-red-700/50 bg-red-900/20 text-xs text-red-300">
-                    Enrichment errors: ${esc(agg.errors.join('; '))}
                 </div>`;
             } else {
                 html = `<div class="p-2 rounded border border-slate-700 bg-slate-800/50 text-xs text-slate-400">
