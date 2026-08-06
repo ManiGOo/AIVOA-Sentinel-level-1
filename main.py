@@ -51,6 +51,8 @@ class RegulatorySignalResponse(BaseModel):
     llm_analysis: dict
     raw_details: dict
     event_date: str
+    reporting_source: str = ""
+    reported_by: str = ""
     score_breakdown: dict = {}
     
     class Config:
@@ -153,6 +155,8 @@ def get_high_priority_signals(
             "llm_analysis": analysis,
             "raw_details": event.raw_details or {},
             "event_date": str(event.event_date) if event.event_date else "",
+            "reporting_source": event.reporting_source or (event.raw_details or {}).get("reporting_source", ""),
+            "reported_by": event.reported_by or (event.raw_details or {}).get("reported_by", ""),
             "score_breakdown": {
                 "base": base,
                 "paper_bonus": paper_bonus,

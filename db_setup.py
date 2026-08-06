@@ -30,6 +30,8 @@ class RegulatoryEvent(Base):
     raw_details = Column(JSONB)      # The raw JSON from CDSCO
     llm_analysis = Column(JSONB, nullable=True) # The JSON output from Groq/Qwen
     score = Column(Integer, default=0)
+    reporting_source = Column(String(50), nullable=True, server_default='')
+    reported_by = Column(String(100), nullable=True, server_default='')
     
     event_date = Column(Date, default=datetime.utcnow)
 
@@ -41,6 +43,22 @@ def init_db():
         
     # 4. Create the tables
     Base.metadata.create_all(engine)
+
+    # 5. Safe migrations for tables that may already exist
+    migrations = [
+        "ALTER TABLE sdr_data.regulatory_events "
+        "ADD COLUMN IF NOT EXISTS reporting_source VARCHAR(50) DEFAULT ''",
+        "ALTER TABLE sdr_data.regulatory_events "
+        "ADD COLUMN IF NOT EXISTS reported_by VARCHAR(100) DEFAULT ''",
+    ]
+    for sql in migrations:
+        with engine.connect() as conn:
+            try:
+                conn.execute(text(sql))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+
     print("Database schema 'sdr_data' and tables created successfully.")
 
 if __name__ == "__main__":

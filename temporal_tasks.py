@@ -105,6 +105,8 @@ def _parse_record(tab: str, item: dict) -> dict:
             "batch_no": item.get("str_batch_no", ""),
             "reason": item.get("str_nsq_result", ""),
             "event_date": parse_reporting_month_year(item.get("dt_reporting_month_year")),
+            "reporting_source": item.get("str_reporting_source", ""),
+            "reported_by": item.get("str_reported_by_lab_or_state", ""),
         }
     return {
         "drug_name": item.get("product_name_from_dtl") or item.get("product_name_from_mst", ""),
@@ -114,6 +116,8 @@ def _parse_record(tab: str, item: dict) -> dict:
         "batch_no": item.get("str_batch_no", ""),
         "reason": item.get("str_nsq_result") or item.get("str_nsq_remarks", ""),
         "event_date": parse_reporting_month_year(item.get("dt_reporting_month_year")),
+        "reporting_source": item.get("str_reporting_source", ""),
+        "reported_by": item.get("str_reported_by_lab_or_state", ""),
     }
 
 MANDATE_START = date(2026, 1, 1)
@@ -325,6 +329,8 @@ async def save_to_db(data: dict) -> str:
                 raw_details=raw,
                 llm_analysis=item["llm_analysis"],
                 score=final_score,
+                reporting_source=raw.get("reporting_source", ""),
+                reported_by=raw.get("reported_by", ""),
                 event_date=datetime.fromisoformat(event_date).date() if event_date else datetime.utcnow().date()
             )
             db_session.add(new_event)

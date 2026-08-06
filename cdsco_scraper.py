@@ -63,7 +63,9 @@ def scrape_and_process():
                     "drug_name": item.get('str_product_name', item.get('drug_name', '')),
                     "manufacturer": item.get('str_manufactured_by', item.get('manufacturer', '')),
                     "batch_no": item.get('str_batch_no', item.get('batch_no', '')),
-                    "reason": item.get('str_nsq_result', item.get('reason', ''))
+                    "reason": item.get('str_nsq_result', item.get('reason', '')),
+                    "reporting_source": item.get('str_reporting_source', ''),
+                    "reported_by": item.get('str_reported_by_lab_or_state', '')
                 })
         except ValueError:
             # Fallback if CDSCO returns an HTML table fragment
@@ -107,6 +109,8 @@ def scrape_and_process():
                 "raw_details": item,
                 "llm_analysis": llm_analysis,
                 "score": score,
+                "reporting_source": item.get('reporting_source', ''),
+                "reported_by": item.get('reported_by', ''),
                 "event_date": datetime.utcnow().date()
             }
 
