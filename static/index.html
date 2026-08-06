@@ -191,7 +191,7 @@
         </div>
     </div>
 
-    <script src="/static/signal-card.js?v=3"></script>
+    <script src="/static/signal-card.js?v=5"></script>
     <script>
         let allSignals = [];
         let totalCount = 0;
@@ -525,6 +525,27 @@
             }
         }
 
+        function webEvidenceItemHtml(e) {
+            const cls = e.classification || {};
+            const rel = cls.relevance_score != null ? Math.round(cls.relevance_score * 100) + '%'
+                : (e.relevance_score ? Math.round(e.relevance_score * 100) + '%' : '—');
+            const badge = cls.is_paper_qms || e.is_paper_qms
+                ? '<span class="ml-1 px-1.5 py-0.5 rounded bg-yellow-900/60 text-yellow-300 font-semibold">PAPER-QMS</span>'
+                : ((cls.is_relevant != null ? cls.is_relevant : e.is_relevant) ? '<span class="ml-1 px-1.5 py-0.5 rounded bg-teal-900/60 text-teal-300 font-semibold">RELEVANT</span>' : '');
+            const status = e.fetch_status === 'fetched' ? 'fetched'
+                : e.fetch_status === 'failed' ? '<span class="text-red-400">fetch failed</span>'
+                : '<span class="text-slate-500">' + esc(e.fetch_status || 'queued') + '</span>';
+            const summary = cls.summary || e.summary
+                ? '<p class="mt-1 text-slate-400">' + esc(cls.summary || e.summary) + '</p>'
+                : (e.snippet ? '<p class="mt-1 text-slate-500 truncate">' + esc(e.snippet) + '</p>' : '');
+            return `<div class="p-2 rounded border border-slate-700 bg-slate-800/40 text-xs">
+                <a href="${esc(e.url)}" target="_blank" rel="noopener noreferrer" class="text-teal-300 hover:text-teal-200 font-semibold break-all">${esc(e.title || e.url)}</a>
+                <span class="text-slate-500"> · ${esc(e.source || '')}</span>${badge}
+                <span class="text-slate-500"> · relevance ${rel} · ${status}</span>
+                ${summary}
+            </div>`;
+        }
+
         async function renderWebResult(box, eventId) {
             try {
                 const res = await fetch('/api/v1/records/' + eventId + '/web-evidence');
@@ -534,29 +555,56 @@
                     box.innerHTML = '<div class="p-2 rounded border border-slate-700 bg-slate-800/50 text-xs text-slate-400">No web evidence found for this event.</div>';
                     return;
                 }
-                const items = ev.map(e => {
-                    const cls = e.classification || {};
-                    const rel = cls.relevance_score != null ? Math.round(cls.relevance_score * 100) + '%'
-                        : (e.relevance_score ? Math.round(e.relevance_score * 100) + '%' : '—');
-                    const badge = cls.is_paper_qms
-                        ? '<span class="ml-1 px-1.5 py-0.5 rounded bg-yellow-900/60 text-yellow-300 font-semibold">PAPER-QMS</span>'
-                        : (cls.is_relevant ? '<span class="ml-1 px-1.5 py-0.5 rounded bg-teal-900/60 text-teal-300 font-semibold">RELEVANT</span>' : '');
-                    const status = e.fetch_status === 'fetched' ? 'fetched'
-                        : e.fetch_status === 'failed' ? '<span class="text-red-400">fetch failed</span>'
-                        : '<span class="text-slate-500">' + esc(e.fetch_status || 'queued') + '</span>';
-                    const summary = cls.summary
-                        ? '<p class="mt-1 text-slate-400">' + esc(cls.summary) + '</p>'
-                        : (e.snippet ? '<p class="mt-1 text-slate-500 truncate">' + esc(e.snippet) + '</p>' : '');
-                    return `<div class="p-2 rounded border border-slate-700 bg-slate-800/40 text-xs">
-                        <a href="${esc(e.url)}" target="_blank" rel="noopener noreferrer" class="text-teal-300 hover:text-teal-200 font-semibold break-all">${esc(e.title || e.url)}</a>
-                        <span class="text-slate-500"> · ${esc(e.source || '')}</span>${badge}
-                        <span class="text-slate-500"> · relevance ${rel} · ${status}</span>
-                        ${summary}
-                    </div>`;
-                }).join('');
-                box.innerHTML = '<div class="space-y-1.5">' + items + '</div>';
+                box.innerHTML = '<div class="space-y-1.5">' + ev.map(webEvidenceItemHtml).join('') + '</div>';
             } catch (e) {
                 box.innerHTML = '<p class="text-xs text-red-400">Failed to load web evidence: ' + esc(e.message) + '</p>';
+            }
+        }
+
+        function closeWebEvidenceModal() {
+            const m = document.getElementById('webModal');
+            if (m) m.remove();
+        }
+
+        async function showWebEvidenceModal(eventId) {
+            const existing = document.getElementById('webModal');
+            if (existing) existing.remove();
+
+            const cached = (window.__webEv || {})[eventId];
+
+            const overlay = document.createElement('div');
+            overlay.id = 'webModal';
+            overlay.className = 'fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4';
+            overlay.innerHTML = `
+                <div class="bg-slate-900 border border-slate-700 rounded-lg w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl">
+                    <div class="flex items-center justify-between px-5 py-3 border-b border-slate-700 shrink-0">
+                        <h3 class="text-sm font-semibold text-slate-100">Web Evidence</h3>
+                        <button onclick="closeWebEvidenceModal()" class="text-slate-400 hover:text-white text-lg leading-none px-2">×</button>
+                    </div>
+                    <div id="webModalBody" class="p-4 space-y-2 overflow-y-auto text-xs">
+                        <p class="text-slate-400 animate-pulse">Loading evidence…</p>
+                    </div>
+                </div>`;
+            document.body.appendChild(overlay);
+
+            const body = document.getElementById('webModalBody');
+
+            if (cached && cached.length) {
+                body.innerHTML = '<div class="space-y-1.5">' + cached.map(webEvidenceItemHtml).join('') + '</div>';
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/v1/records/' + eventId + '/web-evidence');
+                const data = await res.json();
+                const ev = data.evidence || [];
+                if (!ev.length) {
+                    body.innerHTML = '<p class="text-slate-400">No web evidence persisted for this record yet. Use <span class="text-teal-300 font-semibold">Search Web</span> to fetch it.</p>';
+                } else {
+                    body.innerHTML = '<div class="space-y-1.5">' + ev.map(webEvidenceItemHtml).join('') + '</div>';
+                }
+            } catch (e) {
+                body.innerHTML = '<p class="text-red-400">Failed to load web evidence: ' + esc(e.message) + '</p>';
             }
         }
 

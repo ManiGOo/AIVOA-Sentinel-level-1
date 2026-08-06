@@ -183,6 +183,11 @@
             const groupEvents = base.events || [];
             const isGroup = (base.event_count || 1) > 1;
 
+            window.__webEv = window.__webEv || {};
+            if (base.web_evidence && base.web_evidence.length) {
+                window.__webEv[signal.event_id] = base.web_evidence;
+            }
+
             const raw = signal.raw_details || {};
             const drugName = raw.drug_name || 'Unknown Drug';
             const reason = clean(raw.reason || 'No reason provided');
@@ -266,6 +271,13 @@
                         Search Web
                     </button>
                     <div id="webResult-${signal.event_id}" class="hidden"></div>
+                    ${signal.web_evidence && signal.web_evidence.length ? `
+                    <button onclick="showWebEvidenceModal('${signal.event_id}')" class="w-full py-2 bg-slate-800 hover:bg-slate-600 border border-slate-700 transition-colors rounded text-sm font-semibold flex items-center justify-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10a1 1 0 001 1h14a1 1 0 001-1V7a1 1 0 00-1-1H5a1 1 0 00-1 1zm2 4h12M4 7l8-3 8 3" />
+                        </svg>
+                        Web Evidence (${signal.web_evidence.length})
+                    </button>` : ''}
                 </div>`}
             `;
         }

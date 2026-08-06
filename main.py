@@ -70,6 +70,7 @@ class RegulatorySignalResponse(BaseModel):
     paper_assessment: dict = {}
     event_count: int = 1
     events: list = []
+    web_evidence: list = []
     
     class Config:
         from_attributes = True
@@ -135,7 +136,19 @@ def _load_enrichment(db, page_keys):
     return checks_by_key, evidence_by_key
 
 
-def _build_signal_card(event, counts, checks_by_key, evidence_by_key) -> dict:
+def _load_web_evidence(db):
+    """All persisted agentic web evidence, grouped by the card-level company
+    key (the same _group_key that drives card grouping) so evidence fetched
+    for any name variant of a company surfaces on all of its cards."""
+    web_by_key = {}
+    for w in db.query(WebEvidence).order_by(WebEvidence.relevance_score.desc()).all():
+        gkey = _group_key(w.mfr_key or "")
+        if gkey:
+            web_by_key.setdefault(gkey, []).append(w)
+    return web_by_key
+
+
+def _build_signal_card(event, counts, checks_by_key, evidence_by_key, web_by_key, db) -> dict:
     """Recompute the class-aware score for one event and build its card dict.
     Mutates event.score/paper_* on the ORM object (caller commits)."""
     analysis = event.llm_analysis or {}
@@ -183,6 +196,27 @@ def _build_signal_card(event, counts, checks_by_key, evidence_by_key) -> dict:
     event.paper_proxies = pa["proxies"]
     event.score = new_score
 
+    seen_urls = set()
+    card_web_evidence = []
+    for w in web_by_key.get(_group_key(mfr), []):
+        if w.url in seen_urls:
+            continue
+        seen_urls.add(w.url)
+        c = w.classification or {}
+        card_web_evidence.append({
+            "id": w.id,
+            "url": w.url,
+            "title": w.title or w.url,
+            "source": w.source or "",
+            "fetch_status": w.fetch_status or "",
+            "relevance_score": int(w.relevance_score or c.get("relevance_score", 0) or 0),
+            "is_paper_qms": bool(c.get("is_paper_qms", False)),
+            "is_relevant": bool(c.get("is_relevant", False)),
+            "summary": c.get("summary", ""),
+        })
+        if len(card_web_evidence) >= 10:
+            break
+
     return {
         "event_id": str(event.event_id),
         "regulator": event.regulator,
@@ -220,6 +254,7 @@ def _build_signal_card(event, counts, checks_by_key, evidence_by_key) -> dict:
                 for e in evidence_by_key.get(ckey, [])
             ],
         },
+        "web_evidence": card_web_evidence,
     }
 
 @app.get("/api/v1/signals/high-priority", response_model=SignalPageResponse)
@@ -294,6 +329,8 @@ def get_high_priority_signals(
         if key:
             counts[key] = counts.get(key, 0) + cnt
 
+    web_by_key = _load_web_evidence(db)
+
     # Group by company: one card per company_key, with every repeat incident
     # embedded in `events` for the card's dropdown. Placeholder manufacturers
     # ("under investigation", etc.) are unknown entities — each stays its own card.
@@ -329,7 +366,7 @@ def get_high_priority_signals(
         response = []
         for g in page_groups:
             g["events"].sort(key=lambda e: e.score, reverse=True)
-            cards = [_build_signal_card(e, counts, checks_by_key, evidence_by_key)
+            cards = [_build_signal_card(e, counts, checks_by_key, evidence_by_key, web_by_key, db)
                      for e in g["events"]]
             card = cards[0]
             if len(cards) > 1:
@@ -349,7 +386,7 @@ def get_high_priority_signals(
                 page_keys.add(ckey)
         checks_by_key, evidence_by_key = _load_enrichment(db, page_keys)
 
-        response = [_build_signal_card(e, counts, checks_by_key, evidence_by_key)
+        response = [_build_signal_card(e, counts, checks_by_key, evidence_by_key, web_by_key, db)
                     for e in events]
 
     db.commit()
