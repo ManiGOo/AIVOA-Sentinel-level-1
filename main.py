@@ -85,6 +85,50 @@ class SignalPageResponse(BaseModel):
     paper_count: int
 
 
+class CompanyRankingItem(BaseModel):
+    company_key: str
+    name: str
+    slug: str
+    score: int
+    max_possible_score: int = 0
+    event_count: int
+    avg_score: float
+    latest_date: str = ""
+    regulators: list = []
+    paper_count: int = 0
+    mandate_count: int = 0
+
+
+class CompanyRankingResponse(BaseModel):
+    items: List[CompanyRankingItem]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+class CompanySummary(BaseModel):
+    company_key: str
+    name: str
+    slug: str
+    score: int
+    max_possible_score: int = 0
+    event_count: int
+    avg_score: float
+    latest_date: str = ""
+    regulators: list = []
+    years: list = []
+    paper_count: int = 0
+    mandate_count: int = 0
+    evidence_count: int = 0
+    web_evidence_count: int = 0
+
+
+class CompanySignalsResponse(BaseModel):
+    company: CompanySummary
+    card: RegulatorySignalResponse
+
+
 _GROUP_KEY_NORM = re.compile(r"[^a-z0-9]+")
 _LEGAL_WORDS = {"pvt", "private", "ltd", "limited", "llp", "inc", "corp",
                 "corporation", "co", "company"}
@@ -147,6 +191,27 @@ def _load_web_evidence(db):
         if gkey:
             web_by_key.setdefault(gkey, []).append(w)
     return web_by_key
+
+
+_SLUG_NORM = re.compile(r"[^a-z0-9]+")
+
+
+def _slug(gkey: str) -> str:
+    """URL-safe slug from a _group_key: 'rivpra formulation' -> 'rivpra-formulation'."""
+    return _SLUG_NORM.sub("-", (gkey or "").strip()).strip("-")
+
+
+def _prior_event_counts(db) -> dict:
+    """Per-manufacturer incident counts (repeat-offender input), mirroring the
+    count built inside get_high_priority_signals."""
+    mfr_col = func.coalesce(RegulatoryEvent.raw_details['manufacturer'].astext, '')
+    counts = {}
+    for mfr, cnt in db.query(mfr_col, func.count(RegulatoryEvent.event_id))\
+            .group_by(mfr_col).all():
+        key = mfr_key(mfr)
+        if key:
+            counts[key] = counts.get(key, 0) + cnt
+    return counts
 
 
 def _web_evidence_bonus(items: list) -> int:
@@ -451,6 +516,155 @@ def get_high_priority_signals(
         "pages": (total + page_size - 1) // page_size,
         "paper_count": paper_count,
     }
+
+@app.get("/api/v1/companies/ranking", response_model=CompanyRankingResponse)
+def get_company_ranking(
+    page: int = 1,
+    page_size: int = 10,
+    q: str = None,
+    db: Session = Depends(get_db),
+):
+    """Company leaderboard: every company entity (same _group_key as the card
+    grouping) ranked by its highest-scoring signal, then by name. Paginated for
+    the sidebar's 'view more' and the full directory page."""
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 100)
+    q = (q or "").strip().lower()
+
+    events = db.query(RegulatoryEvent).order_by(RegulatoryEvent.score.desc()).all()
+    groups = {}
+    for e in events:
+        mfr = (e.raw_details or {}).get("manufacturer", "")
+        gkey = _group_key(mfr)
+        if not gkey:
+            continue
+        if q:
+            hay = " ".join(
+                str((e.raw_details or {}).get(k, "")) for k in
+                ("manufacturer", "drug_name", "reason", "batch_no")
+            ).lower()
+            if q not in hay:
+                continue
+        g = groups.get(gkey)
+        if g is None:
+            g = {
+                "gkey": gkey,
+                "name": clean_company_name(PAREN.sub("", mfr)) or gkey,
+                "slug": _slug(gkey),
+                "score": 0,
+                "event_count": 0,
+                "sum_score": 0,
+                "latest": None,
+                "reg_set": set(),
+                "paper": 0,
+                "mandates": 0,
+            }
+            groups[gkey] = g
+        g["event_count"] += 1
+        g["sum_score"] += e.score or 0
+        if (e.score or 0) > g["score"]:
+            g["score"] = e.score or 0
+        d = e.event_date
+        if d and (g["latest"] is None or d > g["latest"]):
+            g["latest"] = d
+        g["reg_set"].add(e.regulator or "CDSCO")
+        a = e.llm_analysis or {}
+        if a.get("is_paper_failure"):
+            g["paper"] += 1
+        if any(a.get(k) for k in ("violates_rule_96", "violates_sub_rule_7", "violates_schedule_h2")):
+            g["mandates"] += 1
+
+    items = [{
+        "company_key": g["gkey"],
+        "name": g["name"],
+        "slug": g["slug"],
+        "score": g["score"],
+        "event_count": g["event_count"],
+        "avg_score": round(g["sum_score"] / g["event_count"], 1),
+        "latest_date": str(g["latest"]) if g["latest"] else "",
+        "regulators": sorted(g["reg_set"]),
+        "paper_count": g["paper"],
+        "mandate_count": g["mandates"],
+    } for g in groups.values()]
+    items.sort(key=lambda x: (-x["score"], x["name"].lower()))
+
+    total = len(items)
+    page_items = items[(page - 1) * page_size: page * page_size]
+    return {
+        "items": page_items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": (total + page_size - 1) // page_size,
+    }
+
+
+@app.get("/api/v1/companies/{slug}/signals", response_model=CompanySignalsResponse)
+def get_company_signals(slug: str, db: Session = Depends(get_db)):
+    """Full company page payload: summary + the same grouped card the dashboard
+    renders, with every incident embedded for the card's dropdown."""
+    events = db.query(RegulatoryEvent).all()
+    groups = {}
+    for e in events:
+        mfr = (e.raw_details or {}).get("manufacturer", "")
+        gkey = _group_key(mfr)
+        if gkey:
+            groups.setdefault(gkey, []).append(e)
+
+    target = None
+    for gkey, evs in groups.items():
+        if _slug(gkey) == slug:
+            target = (gkey, evs)
+            break
+    if target is None:
+        raise HTTPException(status_code=404, detail="Company not found")
+    gkey, evs = target
+    evs.sort(key=lambda e: e.score, reverse=True)
+
+    mfr0 = (evs[0].raw_details or {}).get("manufacturer", "")
+    ckey = company_key(mfr0)
+    counts = _prior_event_counts(db)
+    web_by_key = _load_web_evidence(db)
+    checks_by_key, evidence_by_key = _load_enrichment(db, {ckey} if ckey else set())
+
+    cards = [_build_signal_card(e, counts, checks_by_key, evidence_by_key, web_by_key, db)
+             for e in evs]
+    card = cards[0]
+    if len(cards) > 1:
+        card["event_count"] = len(cards)
+        card["events"] = cards[1:]
+
+    dates = [e.event_date for e in evs if e.event_date]
+    summary = {
+        "company_key": gkey,
+        "name": clean_company_name(PAREN.sub("", mfr0)) or gkey,
+        "slug": slug,
+        "score": card["score"],
+        "max_possible_score": card.get("max_possible_score", 0),
+        "event_count": len(evs),
+        "avg_score": round(sum(e.score or 0 for e in evs) / len(evs), 1),
+        "latest_date": str(max(dates)) if dates else "",
+        "regulators": sorted({e.regulator or "CDSCO" for e in evs}),
+        "years": sorted({str(d)[:4] for d in dates}),
+        "paper_count": sum(1 for e in evs if (e.llm_analysis or {}).get("is_paper_failure")),
+        "mandate_count": sum(1 for e in evs if any(
+            (e.llm_analysis or {}).get(k)
+            for k in ("violates_rule_96", "violates_sub_rule_7", "violates_schedule_h2"))),
+        "evidence_count": len(evidence_by_key.get(ckey, [])),
+        "web_evidence_count": sum(len(v) for k, v in web_by_key.items() if k == gkey),
+    }
+
+    db.commit()
+    return {"company": summary, "card": card}
+
+
+@app.get("/companies")
+@app.get("/companies/{path:path}")
+def serve_company_frontend(path: str = ""):
+    """SPA shell: the router in company-view.js reads location.pathname and
+    renders the directory / individual company page client-side."""
+    return FileResponse("static/index.html")
+
 
 @app.post("/api/v1/campaigns/{event_id}/approve")
 def approve_outbound_campaign(event_id: str, db: Session = Depends(get_db)):
