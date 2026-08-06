@@ -251,6 +251,32 @@
         }
     }
 
+    /* ------------------------ collapsible sidebar -------------------------- */
+
+    const SIDEBAR_KEY = 'sentinelSidebarCollapsed';
+
+    function applySidebarState() {
+        let collapsed = true;
+        try { collapsed = localStorage.getItem(SIDEBAR_KEY) !== '0'; } catch (e) { /* ignore */ }
+        const aside = document.getElementById('companySidebar');
+        const btn = document.getElementById('sidebarToggle');
+        const label = document.getElementById('sidebarToggleLabel');
+        const icon = document.getElementById('sidebarToggleIcon');
+        if (aside) aside.classList.toggle('hidden', collapsed);
+        if (label) label.textContent = collapsed ? 'Show ranking' : 'Hide ranking';
+        if (icon) icon.innerHTML = collapsed
+            ? '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />'
+            : '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />';
+        if (btn) btn.title = collapsed ? 'Show company ranking sidebar' : 'Hide company ranking sidebar';
+    }
+
+    window.toggleSidebar = function () {
+        let collapsed = true;
+        try { collapsed = localStorage.getItem(SIDEBAR_KEY) !== '0'; } catch (e) { /* ignore */ }
+        try { localStorage.setItem(SIDEBAR_KEY, collapsed ? '0' : '1'); } catch (e) { /* ignore */ }
+        applySidebarState();
+    };
+
     /* ------------------------------ router -------------------------------- */
 
     async function route() {
@@ -302,5 +328,6 @@
     if (moreBtn) moreBtn.addEventListener('click', () => loadSidebarPage(false));
 
     loadSidebarPage(true);
+    applySidebarState();
     route();
 })();
