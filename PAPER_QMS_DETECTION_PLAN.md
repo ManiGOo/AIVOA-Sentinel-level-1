@@ -35,7 +35,7 @@ behavioral signals, and company-level aggregation.
 | Columns (recently added) | `reporting_source`, `reported_by` (TEXT) — from CDSCO `str_reporting_source` / `str_reported_by_lab_or_state` |
 | Scoring | `temporal_tasks.calculate_base_score`: NSQ=20, SPURIOUS=40, paper=+30, 2026 mandate=+20, recency decay, repeat-offender bonus |
 | Stack | FastAPI (`:5000`), Temporal dev server (`:7233`), Python worker, Docker Compose |
-| **Enricher container** | `enricher` service — own Playwright image + Temporal worker on `enrichment-task-queue`; FDA adapter verified live |
+| **Enricher container** | `enricher` service — own Playwright image + Temporal worker on `enrichment-task-queue`; **FDA and EudraGMDP adapters both verified live** |
 | Mode | `VIEW_ONLY=0` locally; `render.yaml` stays `VIEW_ONLY=1` for demo deploy |
 | 2025 scrape | Workflow `cdsco-scraper-workflow-2025-20260806061942` (NSQ ~1898 found + spurious) |
 
@@ -56,8 +56,8 @@ Sources:
 - **EudraGMDP (EU GMP non-compliance statements)** — PRIMARY candidate.
   - Non-compliance statements explicitly cite documentation/data-integrity
     findings. Covers many Indian manufacturing sites.
-  - Search is **login-gated** — a **free EudraGMDP account unlocks it**.
-  - Action: user creates account; we build login + search + statement fetch.
+  - Search is **public** (date-range form) — no account needed. Adapter done
+    and verified live.
 - **FDA Warning Letters** — richest language (batch records, data integrity).
   - Public, **no account exists/needed**.
   - Blocker: search data endpoint is an obfuscated JS datatable that 404s, and
@@ -95,8 +95,14 @@ Sources:
     (the exposed filter form is a GET; the table is server-rendered, NOT the
     `datatables-data` endpoint we originally assumed) and read `#datatable tbody tr`.
     Search is fuzzy, so rows are kept only when the **company cell** matches.
-  - EudraGMDP: login-gated; adapter does free-account login
-    (`EUDRA_GMDP_USER`/`EUDRA_GMDP_PASS`) then searches.
+  - EudraGMDP: **no login needed** — EMA does not grant scraping accounts, but
+    the non-compliance search is public (a date-range POST form, no firm-name
+    field). Adapter submits a wide date range, reads the results table, keeps
+    rows whose *Site Name* matches, then navigates the same page to each
+    statement's drilldown (the session is page-scoped; opening a fresh page
+    returns an error page) to capture the statement body. Verified live:
+    "Avlab S.r.l." -> 1 statement (2026-07-23) with clean text; throttled
+    with random 2-5s delays.
   - One browser adapter covers both sources; run as a **background Temporal
     activity**, not in the API request path.
   - Image: **`mcr.microsoft.com/playwright/python:v1.62.0-noble`** (enricher
@@ -138,12 +144,9 @@ Sources:
 ---
 
 ## 5. Open decisions / next actions
-- [ ] Create **free EudraGMDP account** → share login flow/credentials so Layer
-       1 primary source can be built and verified live. (FDA adapter already
-       done and verified from this IP.)
-- [x] Build **enricher container + Temporal worker** — `adapters/fda.py`
-      verified live against FDA; `adapters/eudragmdp.py` scaffolded but
-      unverified until credentials exist.
+- [ ] Wait out/raise the **Groq daily token limit** (200k TPD on-demand tier;
+      429s during heavy scrape + enrichment). Consider a separate model/key for
+      enrichment, or Dev-tier upgrade.
 - [ ] Wire the app: `POST /api/v1/enrichment/trigger` to start
       `EnrichmentWorkflow` from the distinct `mfr_key` values already in
       `regulatory_events`.
