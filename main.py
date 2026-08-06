@@ -8,10 +8,11 @@ from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime, timezone
 import os
+import re
 
 from db_setup import SessionLocal, RegulatoryEvent, RegulatoryEvidence, EnrichmentCheck
 from temporal_tasks import MANDATE_START, recency_weight, repeat_offender_bonus, mfr_key
-from company_names import clean_company_name
+from company_names import clean_company_name, PAREN
 from paper_category import assess_paper_category
 
 
@@ -66,6 +67,8 @@ class RegulatorySignalResponse(BaseModel):
     score_breakdown: dict = {}
     enrichment: dict = {}
     paper_assessment: dict = {}
+    event_count: int = 1
+    events: list = []
     
     class Config:
         from_attributes = True
@@ -78,6 +81,145 @@ class SignalPageResponse(BaseModel):
     pages: int
     paper_count: int
 
+
+_GROUP_KEY_NORM = re.compile(r"[^a-z0-9]+")
+_LEGAL_WORDS = {"pvt", "private", "ltd", "limited", "llp", "inc", "corp",
+                "corporation", "co", "company"}
+_PLURAL_SING = {
+    "formulations": "formulation", "laboratories": "laboratory",
+    "industries": "industry", "enterprises": "enterprise",
+    "sciences": "science", "pharmaceuticals": "pharmaceutical",
+    "chemicals": "chemical", "biologicals": "biological",
+    "diagnostics": "diagnostic", "remedies": "remedy",
+    "botanicals": "botanical", "devices": "device",
+}
+
+
+def _group_key(mfr):
+    """Company-grouping key: the cleaned trading name (reusing
+    clean_company_name for M/s prefixes, addresses, parentheticals), then fully
+    normalized so spelling variants ('Pvt. Ltd.'/'Pvt.Ltd'/'Pvt ltd'),
+    legal-suffix differences ('Zee Laboratories' vs 'Zee Laboratories Ltd') and
+    plural/singular forms ('Rivpra Formulations' vs 'Rivpra Formulation') all
+    collapse into a single card.
+
+    Parenthetical descriptors are removed from the raw string FIRST: otherwise
+    a suffix like '(A WHO - GMP Certified Company)' sitting between the name
+    and the address marker confuses the company-cut and survives as trailing
+    noise."""
+    name = clean_company_name(PAREN.sub("", mfr or ""))
+    if not name:
+        return ""
+    words = re.sub(_GROUP_KEY_NORM, " ", name.lower()).strip().split()
+    words = [w for w in words if w not in _LEGAL_WORDS]
+    words = [_PLURAL_SING.get(w, w) for w in words]
+    return " ".join(words).strip()
+
+
+def _load_enrichment(db, page_keys):
+    """Enrichment state for a set of company_keys: latest check per source
+    (incl. 'checked, no findings') + stored evidence rows. All raw manufacturer
+    variants of one company share the same company_key."""
+    checks_by_key = {}
+    evidence_by_key = {}
+    if page_keys:
+        for c in db.query(EnrichmentCheck).filter(
+                EnrichmentCheck.company_key.in_(page_keys))\
+                .order_by(EnrichmentCheck.checked_at.desc()).all():
+            checks_by_key.setdefault(c.company_key or "", []).append(c)
+        for e in db.query(RegulatoryEvidence).filter(
+                RegulatoryEvidence.company_key.in_(page_keys))\
+                .order_by(RegulatoryEvidence.fetched_at.desc()).all():
+            evidence_by_key.setdefault(e.company_key or "", []).append(e)
+    return checks_by_key, evidence_by_key
+
+
+def _build_signal_card(event, counts, checks_by_key, evidence_by_key) -> dict:
+    """Recompute the class-aware score for one event and build its card dict.
+    Mutates event.score/paper_* on the ORM object (caller commits)."""
+    analysis = event.llm_analysis or {}
+    mfr = (event.raw_details or {}).get('manufacturer', '')
+    key = mfr_key(mfr)
+    ckey = company_key(mfr)
+
+    latest_checks = {}
+    for c in checks_by_key.get(ckey, []):
+        if c.source not in latest_checks:
+            latest_checks[c.source] = {
+                "status": c.status,
+                "checked_at": str(c.checked_at) if c.checked_at else "",
+                "searched_name": c.searched_name or "",
+                "findings_count": c.findings_count or 0,
+                "paper_qms_count": c.paper_qms_count or 0,
+            }
+
+    prior = max(counts.get(key, 0) - 1, 0)
+    base = 40 if event.event_type == 'SPURIOUS_DRUG' else 20
+    pa = assess_paper_category(
+        ckey,
+        (event.raw_details or {}).get("reason", ""),
+        event.reported_by or (event.raw_details or {}).get("reported_by", ""),
+        evidence_by_key.get(ckey, []),
+        checks_by_key.get(ckey, []),
+        (analysis or {}).get("failure_mode", ""),
+    )
+    # Class-aware paper bonus: explicit regulator quote = full weight;
+    # deductive (Category 2) scales with proxy confidence; none = 0.
+    if pa["class"] == "explicit":
+        paper_bonus = 30
+    elif pa["class"] == "deductive":
+        paper_bonus = round(20 * pa["confidence"] / 100)
+    else:
+        paper_bonus = 0
+    mandate_flags = [k for k in ('violates_rule_96', 'violates_sub_rule_7', 'violates_schedule_h2') if analysis.get(k)]
+    mandate_bonus = 20 if (mandate_flags and event.event_date and event.event_date >= MANDATE_START) else 0
+    recency = recency_weight(event.event_date)
+    repeat_bonus = repeat_offender_bonus(prior)
+    new_score = round((base + paper_bonus + mandate_bonus) * recency) + repeat_bonus
+
+    event.paper_evidence_class = pa["class"]
+    event.paper_confidence = pa["confidence"]
+    event.paper_proxies = pa["proxies"]
+    event.score = new_score
+
+    return {
+        "event_id": str(event.event_id),
+        "regulator": event.regulator,
+        "event_type": event.event_type,
+        "score": new_score,
+        "llm_analysis": analysis,
+        "raw_details": event.raw_details or {},
+        "event_date": str(event.event_date) if event.event_date else "",
+        "reporting_source": event.reporting_source or (event.raw_details or {}).get("reporting_source", ""),
+        "reported_by": event.reported_by or (event.raw_details or {}).get("reported_by", ""),
+        "paper_assessment": pa,
+        "score_breakdown": {
+            "base": base,
+            "paper_bonus": paper_bonus,
+            "paper_bonus_class": pa["class"],
+            "mandate_bonus": mandate_bonus,
+            "mandate_flags": mandate_flags,
+            "recency_weight": recency,
+            "repeat_offender_bonus": repeat_bonus,
+            "prior_events": prior,
+        },
+        "enrichment": {
+            "checks": latest_checks,
+            "evidence": [
+                {
+                    "source": e.source,
+                    "firm_name": e.firm_name,
+                    "finding_date": str(e.finding_date) if e.finding_date else "",
+                    "url": e.url or "",
+                    "paper_qms_score": e.paper_qms_score or 0,
+                    "evidence_quote": e.evidence_quote or "",
+                    "is_explicit": bool((e.paper_qms_score or 0) > 0),
+                }
+                for e in evidence_by_key.get(ckey, [])
+            ],
+        },
+    }
+
 @app.get("/api/v1/signals/high-priority", response_model=SignalPageResponse)
 def get_high_priority_signals(
     min_score: int = 0,
@@ -88,6 +230,7 @@ def get_high_priority_signals(
     event_type: str = None,
     is_paper: bool = None,
     paper_class: str = None,
+    group_by: str = None,
     rule_96: bool = False,
     sub_rule_7: bool = False,
     schedule_h2: bool = False,
@@ -137,11 +280,7 @@ def get_high_priority_signals(
             RegulatoryEvent.llm_analysis['is_paper_failure'].astext == 'true'
         ).count()
 
-    events = query.order_by(RegulatoryEvent.score.desc())\
-                .offset((page - 1) * page_size)\
-                .limit(page_size)\
-                .all()
-
+    # Prior-event counts per manufacturer (used for the repeat-offender bonus).
     mfr_col = func.coalesce(RegulatoryEvent.raw_details['manufacturer'].astext, '')
     counts = {}
     for mfr, cnt in db.query(mfr_col, func.count(RegulatoryEvent.event_id))\
@@ -150,113 +289,64 @@ def get_high_priority_signals(
         if key:
             counts[key] = counts.get(key, 0) + cnt
 
-    # Enrichment state for the page's companies (entity-level): latest check per
-    # source (including 'checked, no findings') + stored evidence rows. All raw
-    # manufacturer variants of one company share the same company_key.
-    page_keys = set()
-    for event in events:
-        mfr = (event.raw_details or {}).get('manufacturer', '')
-        ckey = company_key(mfr)
-        if ckey:
-            page_keys.add(ckey)
+    # Group by company: one card per company_key, with every repeat incident
+    # embedded in `events` for the card's dropdown. Placeholder manufacturers
+    # ("under investigation", etc.) are unknown entities — each stays its own card.
+    if group_by == "company":
+        matching = query.order_by(RegulatoryEvent.score.desc()).all()
+        groups = []
+        group_of = {}
+        for event in matching:
+            mfr = (event.raw_details or {}).get('manufacturer', '')
+            key = _group_key(mfr) if mfr_key(mfr) else f"__evt__{event.event_id}"
+            if key not in group_of:
+                group_of[key] = len(groups)
+                groups.append({"events": [event]})
+            else:
+                groups[group_of[key]]["events"].append(event)
 
-    checks_by_key = {}
-    evidence_by_key = {}
-    if page_keys:
-        for c in db.query(EnrichmentCheck).filter(
-                EnrichmentCheck.company_key.in_(page_keys))\
-                .order_by(EnrichmentCheck.checked_at.desc()).all():
-            checks_by_key.setdefault(c.company_key or "", []).append(c)
-        for e in db.query(RegulatoryEvidence).filter(
-                RegulatoryEvidence.company_key.in_(page_keys))\
-                .order_by(RegulatoryEvidence.fetched_at.desc()).all():
-            evidence_by_key.setdefault(e.company_key or "", []).append(e)
+        total = len(groups)
+        paper_count = 0
+        if is_paper is None:
+            paper_count = sum(
+                1 for g in groups
+                if any((e.llm_analysis or {}).get('is_paper_failure') for e in g["events"]))
 
-    response = []
-    for event in events:
-        analysis = event.llm_analysis or {}
-        mfr = (event.raw_details or {}).get('manufacturer', '')
-        key = mfr_key(mfr)
-        ckey = company_key(mfr)
+        page_groups = groups[(page - 1) * page_size: page * page_size]
 
-        # latest check per source (list is ordered checked_at desc)
-        latest_checks = {}
-        for c in checks_by_key.get(ckey, []):
-            if c.source not in latest_checks:
-                latest_checks[c.source] = {
-                    "status": c.status,
-                    "checked_at": str(c.checked_at) if c.checked_at else "",
-                    "searched_name": c.searched_name or "",
-                    "findings_count": c.findings_count or 0,
-                    "paper_qms_count": c.paper_qms_count or 0,
-                }
+        page_keys = set()
+        for g in page_groups:
+            ckey = company_key((g["events"][0].raw_details or {}).get('manufacturer', ''))
+            if ckey:
+                page_keys.add(ckey)
+        checks_by_key, evidence_by_key = _load_enrichment(db, page_keys)
 
-        prior = max(counts.get(key, 0) - 1, 0)
-        base = 40 if event.event_type == 'SPURIOUS_DRUG' else 20
-        pa = assess_paper_category(
-            ckey,
-            (event.raw_details or {}).get("reason", ""),
-            event.reported_by or (event.raw_details or {}).get("reported_by", ""),
-            evidence_by_key.get(ckey, []),
-            checks_by_key.get(ckey, []),
-            (analysis or {}).get("failure_mode", ""),
-        )
-        # Class-aware paper bonus: explicit regulator quote = full weight;
-        # deductive (Category 2) scales with proxy confidence; none = 0.
-        if pa["class"] == "explicit":
-            paper_bonus = 30
-        elif pa["class"] == "deductive":
-            paper_bonus = round(20 * pa["confidence"] / 100)
-        else:
-            paper_bonus = 0
-        mandate_flags = [k for k in ('violates_rule_96', 'violates_sub_rule_7', 'violates_schedule_h2') if analysis.get(k)]
-        mandate_bonus = 20 if (mandate_flags and event.event_date and event.event_date >= MANDATE_START) else 0
-        recency = recency_weight(event.event_date)
-        repeat_bonus = repeat_offender_bonus(prior)
-        new_score = round((base + paper_bonus + mandate_bonus) * recency) + repeat_bonus
+        response = []
+        for g in page_groups:
+            g["events"].sort(key=lambda e: e.score, reverse=True)
+            cards = [_build_signal_card(e, counts, checks_by_key, evidence_by_key)
+                     for e in g["events"]]
+            card = cards[0]
+            if len(cards) > 1:
+                card["event_count"] = len(cards)
+                card["events"] = cards[1:]
+            response.append(card)
+    else:
+        events = query.order_by(RegulatoryEvent.score.desc())\
+                    .offset((page - 1) * page_size)\
+                    .limit(page_size)\
+                    .all()
 
-        response.append({
-            "event_id": str(event.event_id),
-            "regulator": event.regulator,
-            "event_type": event.event_type,
-            "score": new_score,
-            "llm_analysis": analysis,
-            "raw_details": event.raw_details or {},
-            "event_date": str(event.event_date) if event.event_date else "",
-            "reporting_source": event.reporting_source or (event.raw_details or {}).get("reporting_source", ""),
-            "reported_by": event.reported_by or (event.raw_details or {}).get("reported_by", ""),
-            "paper_assessment": pa,
-            "score_breakdown": {
-                "base": base,
-                "paper_bonus": paper_bonus,
-                "paper_bonus_class": pa["class"],
-                "mandate_bonus": mandate_bonus,
-                "mandate_flags": mandate_flags,
-                "recency_weight": recency,
-                "repeat_offender_bonus": repeat_bonus,
-                "prior_events": prior,
-            },
-            "enrichment": {
-                "checks": latest_checks,
-                "evidence": [
-                    {
-                        "source": e.source,
-                        "firm_name": e.firm_name,
-                        "finding_date": str(e.finding_date) if e.finding_date else "",
-                        "url": e.url or "",
-                        "paper_qms_score": e.paper_qms_score or 0,
-                        "evidence_quote": e.evidence_quote or "",
-                        "is_explicit": bool((e.paper_qms_score or 0) > 0),
-                    }
-                    for e in evidence_by_key.get(ckey, [])
-                ],
-            },
-        })
-        # Cache the assessment snapshot + full lead score for reporting/filtering.
-        event.paper_evidence_class = pa["class"]
-        event.paper_confidence = pa["confidence"]
-        event.paper_proxies = pa["proxies"]
-        event.score = new_score
+        page_keys = set()
+        for event in events:
+            ckey = company_key((event.raw_details or {}).get('manufacturer', ''))
+            if ckey:
+                page_keys.add(ckey)
+        checks_by_key, evidence_by_key = _load_enrichment(db, page_keys)
+
+        response = [_build_signal_card(e, counts, checks_by_key, evidence_by_key)
+                    for e in events]
+
     db.commit()
     return {
         "items": response,

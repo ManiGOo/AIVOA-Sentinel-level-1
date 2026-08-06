@@ -132,6 +132,7 @@
             super();
             this._signal = null;
             this._viewOnly = false;
+            this._selectedIdx = -1;
         }
 
         set signal(value) {
@@ -147,12 +148,32 @@
             this.render();
         }
 
+        selectEvent(value) {
+            this._selectedIdx = parseInt(value, 10) || 0;
+            if (this._selectedIdx === 0 && value !== '0') this._selectedIdx = -1;
+            this.render();
+        }
+
+        _displaySignal() {
+            const base = this._signal || {};
+            const events = base.events || [];
+            if (events.length && this._selectedIdx >= 0) {
+                const idx = Math.min(this._selectedIdx, events.length - 1);
+                return { ...base, ...events[idx], events: base.events, event_count: base.event_count };
+            }
+            return base;
+        }
+
         render() {
-            const signal = this._signal || {};
+            const base = this._signal || {};
+            const signal = this._displaySignal();
             if (!signal.event_id) {
                 this.innerHTML = '<div class="glass-panel p-5 border border-slate-700 text-slate-500">No signal data.</div>';
                 return;
             }
+
+            const groupEvents = base.events || [];
+            const isGroup = (base.event_count || 1) > 1;
 
             const raw = signal.raw_details || {};
             const drugName = raw.drug_name || 'Unknown Drug';
@@ -182,6 +203,16 @@
 
                     <h3 class="font-bold text-xl mb-1 text-white">${esc(company)}</h3>
                     ${address ? `<p class="text-xs text-slate-500 mb-3 leading-relaxed">${esc(address)}</p>` : ''}
+                    ${isGroup ? `
+                    <div class="mb-3">
+                        <div class="flex items-center gap-2">
+                            <span class="text-[10px] uppercase tracking-wider text-slate-500 shrink-0">Incidents · ${base.event_count}</span>
+                            <select onchange="this.closest('signal-card').selectEvent(this.value)" class="flex-1 min-w-0 px-2 py-1.5 bg-slate-800/70 border border-slate-700 rounded-lg text-xs text-slate-300 focus:outline-none focus:border-blue-500">
+                                <option value="-1" ${this._selectedIdx < 0 ? 'selected' : ''}>Current · ${esc(signal.raw_details?.drug_name || 'Unknown Drug')} · ${esc(signal.event_date || 'n/a')} · ${signal.score}</option>
+                                ${groupEvents.map((e, i) => `<option value="${i}" ${this._selectedIdx === i ? 'selected' : ''}>${esc(e.raw_details?.drug_name || 'Unknown Drug')} · ${esc(e.event_date || 'n/a')} · ${e.score}</option>`).join('')}
+                            </select>
+                        </div>
+                    </div>` : ''}
                     <p class="text-slate-400 text-sm mb-4">${esc(drugName)}</p>
 
                     <div class="mb-4">

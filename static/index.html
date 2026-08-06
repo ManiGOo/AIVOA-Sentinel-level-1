@@ -132,6 +132,7 @@
 
             <!-- Filters -->
             <div class="flex flex-wrap items-center gap-3 mb-6 p-4 bg-slate-800/40 rounded-lg border border-slate-700/50">
+                <label class="flex items-center gap-2 text-sm text-slate-300 cursor-pointer"><input type="checkbox" id="filterGroup" checked onchange="resetAndRender()" class="accent-sky-500 w-4 h-4"><span title="One card per company; repeat incidents shown in a dropdown">Group by company</span></label>
                 <select id="filterEventType" onchange="resetAndRender()" class="px-3 py-2 bg-slate-800/70 border border-slate-700 rounded-lg text-sm text-slate-300 focus:outline-none focus:border-blue-500">
                     <option value="">All Types</option>
                     <option value="NSQ_DRUG">NSQ</option>
@@ -208,6 +209,7 @@
             if (paper) params.set('is_paper', paper === 'paper' ? 'true' : 'false');
             const pcls = document.getElementById('filterPaperClass').value;
             if (pcls) params.set('paper_class', pcls);
+            if (document.getElementById('filterGroup').checked) params.set('group_by', 'company');
             if (document.getElementById('filterRule96').checked) params.set('rule_96', 'true');
             if (document.getElementById('filterSubRule7').checked) params.set('sub_rule_7', 'true');
             if (document.getElementById('filterH2').checked) params.set('schedule_h2', 'true');
