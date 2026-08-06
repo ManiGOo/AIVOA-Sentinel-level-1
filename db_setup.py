@@ -10,8 +10,15 @@ from sqlalchemy.types import DateTime
 sdr_metadata = MetaData(schema='sdr_data')
 Base = declarative_base(metadata=sdr_metadata)
 
-# 2. Database engine using sync psycopg2
-DB_URL = os.getenv("DATABASE_URL", "postgresql://pharmabkp:aivoadma25@216.48.184.249:5432/pharma")
+# 2. Database engine using sync psycopg2. The URL must come from the
+# environment (DATABASE_URL). The credentials used to live hardcoded here as a
+# fallback — that password is now considered compromised (it is in git
+# history) and must be provided via env only.
+DB_URL = os.getenv("DATABASE_URL")
+if not DB_URL:
+    raise RuntimeError(
+        "DATABASE_URL is not set. Set it in the environment (or .env) to "
+        "postgresql://<user>:<pass>@<host>:5432/<dbname>.")
 
 # If user provided a postgresql+asyncpg URL, let's normalize it for sync psycopg2
 if DB_URL.startswith("postgresql+asyncpg://"):

@@ -298,3 +298,67 @@ async def trigger_scraper(req: Optional[ScraperTriggerRequest] = None):
         return {"status": "SUCCESS", "message": f"Scraper workflow started with ID: {handle.id}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+def _top_manufacturers(limit: int = 50) -> List[str]:
+    """Distinct real manufacturers from regulatory_events, ranked by event
+    count. CDSCO placeholders ('Under Investigation', etc.) are excluded."""
+    db = SessionLocal()
+    try:
+        mfr_expr = func.coalesce(RegulatoryEvent.raw_details['manufacturer'].astext, '')
+        rows = db.query(
+            mfr_expr.label('mfr'),
+            func.count(RegulatoryEvent.event_id).label('cnt'),
+        ).group_by(mfr_expr).order_by(func.count(RegulatoryEvent.event_id).desc()).all()
+    finally:
+        db.close()
+    firms = []
+    for mfr, _cnt in rows:
+        if mfr_key(mfr):   # '' for placeholders/empty -> skipped
+            firms.append(mfr)
+        if len(firms) >= limit:
+            break
+    return firms
+
+class EnrichmentTriggerRequest(BaseModel):
+    source: str = "fda"                # fda | eudragmdp | all
+    limit: int = 50                    # max firms when firms is not given
+    firms: Optional[List[str]] = None  # explicit firm names (overrides limit)
+
+@app.post("/api/v1/enrichment/trigger")
+async def trigger_enrichment(req: Optional[EnrichmentTriggerRequest] = None):
+    """
+    Starts EnrichmentWorkflow(s) on the enricher task queue.
+    - Default: top N manufacturers (by event count) against one source.
+    - {"source": "all"} -> one workflow per source.
+    - {"firms": ["Captab Biotec"]} -> only those firms (limit ignored).
+    """
+    req = req or EnrichmentTriggerRequest()
+    if VIEW_ONLY:
+        raise HTTPException(status_code=403, detail="Enrichment execution is disabled in view-only mode.")
+    if req.source not in ("fda", "eudragmdp", "all"):
+        raise HTTPException(status_code=400, detail="source must be 'fda', 'eudragmdp' or 'all'")
+
+    firms = req.firms or _top_manufacturers(req.limit)
+    if not firms:
+        return {"status": "SUCCESS", "message": "No manufacturers to enrich."}
+
+    sources = ["fda", "eudragmdp"] if req.source == "all" else [req.source]
+    try:
+        client = await Client.connect(os.environ.get("TEMPORAL_HOST", "localhost:7233"))
+        workflow_ids = []
+        for source in sources:
+            workflow_id = f"enrichment-{source}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+            handle = await client.start_workflow(
+                "EnrichmentWorkflow",
+                args=[firms, source],
+                id=workflow_id,
+                task_queue="enrichment-task-queue",
+            )
+            workflow_ids.append(handle.id)
+        return {
+            "status": "SUCCESS",
+            "message": f"Enrichment started for {len(firms)} firms on source(s) {sources}",
+            "workflow_ids": workflow_ids,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
