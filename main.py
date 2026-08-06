@@ -210,6 +210,14 @@ def _build_signal_card(event, counts, checks_by_key, evidence_by_key, web_by_key
         paper_bonus = 0
     mandate_flags = [k for k in ('violates_rule_96', 'violates_sub_rule_7', 'violates_schedule_h2') if analysis.get(k)]
     mandate_bonus = 20 if (mandate_flags and event.event_date and event.event_date >= MANDATE_START) else 0
+    excluded = []
+    if not (mandate_flags and event.event_date and event.event_date >= MANDATE_START):
+        excluded.append({
+            "row": "2026 Mandate",
+            "max": 20,
+            "reason": ("event predates the 2026 mandate start" if mandate_flags
+                       else "no Rule 96 / Sub-Rule 7 / Schedule H2 violation on this record"),
+        })
     recency = recency_weight(event.event_date)
     repeat_bonus = repeat_offender_bonus(prior)
 
@@ -282,6 +290,7 @@ def _build_signal_card(event, counts, checks_by_key, evidence_by_key, web_by_key
             "max_repeat_bonus": repeat_bonus,
             "max_web_bonus": 25,
             "max_possible": max_possible,
+            "excluded": excluded,
         },
         "enrichment": {
             "checks": latest_checks,
