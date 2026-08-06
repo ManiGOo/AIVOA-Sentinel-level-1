@@ -35,7 +35,8 @@ _REGULATORY_KEYWORDS = (
     "penalty", "banned", "substandard", "not of standard", "adulterat",
     "seiz", "suspend", "revoke", "regulatory", "investigation", "prosecut",
     "warning", "compliance", "audit", "deficiency", "market withdrawal",
-    "stop production", "notice",
+    "stop production", "notice", "shut", "shutdown", "closure", "cease",
+    "licence", "non-compliance",
 )
 
 _REGULATORY_HOST_HINTS = (

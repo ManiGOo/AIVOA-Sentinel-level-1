@@ -63,10 +63,20 @@
             '<div style="height:100%;border-radius:9999px;background:' + color + ';transition:width .5s;width:' + width + '%"></div></div></div>';
     }
 
+    const REG_ACTION_LABELS = {
+        closure: ['CLOSURE', 'rgba(239,68,68,0.2)', '#fca5a5'],
+        licence_suspension: ['LICENCE SUSPENDED', 'rgba(239,68,68,0.2)', '#fca5a5'],
+        recall: ['RECALL', 'rgba(245,158,11,0.2)', '#fcd34d'],
+        warning_letter: ['WARNING LETTER', 'rgba(245,158,11,0.2)', '#fcd34d'],
+        prosecution: ['PROSECUTION', 'rgba(148,163,184,0.2)', '#cbd5e1'],
+    };
+
     function webEvidenceItemHtml(e, last) {
         const score = scoreOf(e);
         const cls = e.classification || {};
         const paper = !!(cls.is_paper_qms || e.is_paper_qms);
+        const regAct = cls.regulatory_action || e.regulatory_action;
+        const regLabel = REG_ACTION_LABELS[regAct];
         const summary = (cls.summary || e.summary || '').trim();
         const snippet = (e.snippet || '').trim();
         const title = e.title || e.url;
@@ -74,6 +84,7 @@
 
         const badges = [
             paper ? badge(ICONS.paper + 'PAPER-QMS', 'rgba(234,179,8,0.2)', '#fde047', true) : '',
+            regLabel ? badge(regLabel[0], regLabel[1], regLabel[2], true) : '',
             relevanceBadgeHtml(score),
             statusBadgeHtml(e.fetch_status),
         ].filter(Boolean).join(' ');

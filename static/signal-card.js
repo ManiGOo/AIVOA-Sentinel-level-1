@@ -129,6 +129,7 @@
                     <div class="flex justify-between gap-2"><span>2026 Mandate${mandateTxt ? ' · ' + mandateTxt : ''}</span><span class="text-white">+${sb.mandate_bonus ?? 0}</span></div>
                     <div class="flex justify-between gap-2"><span>Recency</span><span class="text-white">${fmt(sb.recency_weight)}</span></div>
                     <div class="flex justify-between gap-2"><span>Repeat offender (${sb.prior_events ?? 0} prior)</span><span class="text-white">+${sb.repeat_offender_bonus ?? 0}</span></div>
+                    <div class="flex justify-between gap-2"><span>Web Evidence (${sb.web_evidence_sources ?? 0} src)</span><span class="text-white">+${sb.web_evidence_bonus ?? 0}</span></div>
                     <div class="border-t border-slate-700 mt-2 pt-1 flex justify-between gap-2 font-bold text-white"><span>Total</span><span>${signal.score}</span></div>
                 </div>
             </div>

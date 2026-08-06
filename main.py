@@ -148,6 +148,28 @@ def _load_web_evidence(db):
     return web_by_key
 
 
+def _web_evidence_bonus(items: list) -> int:
+    """Capped, add-only lead-score bonus derived from stored web evidence.
+    Absence of evidence never penalises; external corroboration adds urgency
+    (a plant closure today is urgent even for an old CDSCO entry)."""
+    if not items:
+        return 0
+    bonus = 0
+    for it in items:
+        if (it.get("relevance_score") or 0) >= 50:
+            bonus += 2
+        if it.get("corroborates_failure"):
+            bonus += 15
+        if it.get("severity") == "high":
+            bonus += 8
+        act = it.get("regulatory_action")
+        if act in ("closure", "licence_suspension"):
+            bonus += 8
+        elif act in ("recall", "warning_letter", "prosecution"):
+            bonus += 5
+    return min(bonus, 25)
+
+
 def _build_signal_card(event, counts, checks_by_key, evidence_by_key, web_by_key, db) -> dict:
     """Recompute the class-aware score for one event and build its card dict.
     Mutates event.score/paper_* on the ORM object (caller commits)."""
@@ -189,12 +211,6 @@ def _build_signal_card(event, counts, checks_by_key, evidence_by_key, web_by_key
     mandate_bonus = 20 if (mandate_flags and event.event_date and event.event_date >= MANDATE_START) else 0
     recency = recency_weight(event.event_date)
     repeat_bonus = repeat_offender_bonus(prior)
-    new_score = round((base + paper_bonus + mandate_bonus) * recency) + repeat_bonus
-
-    event.paper_evidence_class = pa["class"]
-    event.paper_confidence = pa["confidence"]
-    event.paper_proxies = pa["proxies"]
-    event.score = new_score
 
     seen_urls = set()
     card_web_evidence = []
@@ -210,12 +226,24 @@ def _build_signal_card(event, counts, checks_by_key, evidence_by_key, web_by_key
             "source": w.source or "",
             "fetch_status": w.fetch_status or "",
             "relevance_score": int(w.relevance_score or c.get("relevance_score", 0) or 0),
+            "corroborates_failure": bool(c.get("corroborates_failure", False)),
+            "recall_action": bool(c.get("recall_action", False)),
+            "severity": c.get("severity", ""),
+            "regulatory_action": c.get("regulatory_action", ""),
             "is_paper_qms": bool(c.get("is_paper_qms", False)),
             "is_relevant": bool(c.get("is_relevant", False)),
             "summary": c.get("summary", ""),
         })
         if len(card_web_evidence) >= 10:
             break
+
+    web_bonus = _web_evidence_bonus(card_web_evidence)
+    new_score = round((base + paper_bonus + mandate_bonus) * recency) + repeat_bonus + web_bonus
+
+    event.paper_evidence_class = pa["class"]
+    event.paper_confidence = pa["confidence"]
+    event.paper_proxies = pa["proxies"]
+    event.score = new_score
 
     return {
         "event_id": str(event.event_id),
@@ -238,6 +266,8 @@ def _build_signal_card(event, counts, checks_by_key, evidence_by_key, web_by_key
             "recency_weight": recency,
             "repeat_offender_bonus": repeat_bonus,
             "prior_events": prior,
+            "web_evidence_bonus": web_bonus,
+            "web_evidence_sources": len(card_web_evidence),
         },
         "enrichment": {
             "checks": latest_checks,

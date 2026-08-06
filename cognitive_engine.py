@@ -385,7 +385,9 @@ def generate_search_queries(record_details: dict) -> List[str]:
     1. Recalls for this specific batch or product
     2. GMP or quality issues at this manufacturer
     3. Regulatory actions by CDSCO, FDA, or other bodies against this manufacturer
-    
+    4. Facility closure, licence suspension/cancellation, plant shutdown, or GMP 
+       suspension at this manufacturer
+
     Respond ONLY with a valid JSON object:
     {{"queries": ["query1", "query2", ...]}}
     """
@@ -452,14 +454,17 @@ def _focused_excerpt(text: str, record_details: dict,
 
 
 def classify_web_evidence(article_text: str, record_details: dict) -> dict:
-    """Classify a fetched web article for relevance and paper-QMS implications."""
+    """Classify a fetched web article for relevance, paper-QMS implications and
+    the type of regulatory action it describes."""
     if not GROQ_API_KEY.startswith("gsk_"):
         return {"relevance_score": 0, "is_relevant": False, "corroborates_failure": False, 
-                "is_paper_qms": False, "recall_action": False, "severity": "low", "summary": "LLM unavailable"}
+                "is_paper_qms": False, "recall_action": False, "severity": "low",
+                "regulatory_action": "none", "summary": "LLM unavailable"}
     
     if not article_text:
          return {"relevance_score": 0, "is_relevant": False, "corroborates_failure": False, 
-                "is_paper_qms": False, "recall_action": False, "severity": "low", "summary": "No text"}
+                "is_paper_qms": False, "recall_action": False, "severity": "low",
+                "regulatory_action": "none", "summary": "No text"}
                 
     mfr = record_details.get("manufacturer", "")
     drug = record_details.get("drug_name", "")
@@ -482,6 +487,11 @@ def classify_web_evidence(article_text: str, record_details: dict) -> dict:
     5. recall_action (boolean): True if the article mentions a product recall or market withdrawal.
     6. severity (string): "high", "medium", or "low" based on the implications for the manufacturer's QMS.
     7. summary (string): A 1-sentence summary of the article's findings related to the manufacturer.
+    8. regulatory_action (string): the most serious regulatory action described, one of:
+       "closure" (facility closed / plant shut down), "licence_suspension" (licence cancelled
+       or suspended, GMP certificate suspended/withdrawn), "recall" (product recall or market
+       withdrawal), "warning_letter" (regulatory warning/notice), "prosecution" (legal action
+       against the firm), or "none".
     
     Article text (truncated):
     {_focused_excerpt(article_text, record_details)}
@@ -494,6 +504,7 @@ def classify_web_evidence(article_text: str, record_details: dict) -> dict:
       "is_paper_qms": boolean,
       "recall_action": boolean,
       "severity": "high|medium|low",
+      "regulatory_action": "closure|licence_suspension|recall|warning_letter|prosecution|none",
       "summary": "string"
     }}
     """
@@ -514,5 +525,6 @@ def classify_web_evidence(article_text: str, record_details: dict) -> dict:
         print(f"Groq classification error: {e}")
     
     return {"relevance_score": 0, "is_relevant": False, "corroborates_failure": False, 
-            "is_paper_qms": False, "recall_action": False, "severity": "low", "summary": "Error parsing"}
+            "is_paper_qms": False, "recall_action": False, "severity": "low",
+            "regulatory_action": "none", "summary": "Error parsing"}
 
