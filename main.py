@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 import os
 import re
 
-from db_setup import SessionLocal, RegulatoryEvent, RegulatoryEvidence, EnrichmentCheck
+from db_setup import SessionLocal, RegulatoryEvent, RegulatoryEvidence, EnrichmentCheck, WebEvidence
 from temporal_tasks import MANDATE_START, recency_weight, repeat_offender_bonus, mfr_key
 from company_names import clean_company_name, PAREN
 from paper_category import assess_paper_category
@@ -646,4 +646,57 @@ async def enrichment_status(workflow_id: str):
         "summary": summary,
         "result": result,
         "error": error,
+    }
+
+@app.post("/api/v1/web-evidence/search/{event_id}")
+async def trigger_web_evidence_search(event_id: str, db: Session = Depends(get_db)):
+    """Starts the WebEvidenceWorkflow for a specific record."""
+    if VIEW_ONLY:
+        raise HTTPException(status_code=403, detail="Web evidence execution is disabled in view-only mode.")
+    
+    event = db.query(RegulatoryEvent).filter(RegulatoryEvent.event_id == event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Signal event not found")
+        
+    try:
+        client = await Client.connect(os.environ.get("TEMPORAL_HOST", "localhost:7233"))
+        workflow_id = f"web-evidence-{event_id[:8]}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+        handle = await client.start_workflow(
+            "WebEvidenceWorkflow",
+            args=[event_id],
+            id=workflow_id,
+            task_queue="enrichment-task-queue",
+        )
+        return {
+            "status": "SUCCESS",
+            "message": f"Web evidence search started for {event_id}",
+            "workflow_id": handle.id,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/records/{event_id}/web-evidence")
+def get_web_evidence(event_id: str, db: Session = Depends(get_db)):
+    """Retrieve stored web evidence for a record."""
+    evidence = db.query(WebEvidence).filter(
+        WebEvidence.event_id == event_id
+    ).order_by(WebEvidence.relevance_score.desc()).all()
+    
+    return {
+        "event_id": event_id,
+        "evidence": [
+            {
+                "id": str(e.id),
+                "title": e.title,
+                "url": e.url,
+                "source": e.source,
+                "published_date": str(e.published_date) if e.published_date else None,
+                "snippet": e.snippet,
+                "classification": e.classification or {},
+                "relevance_score": e.relevance_score,
+                "fetch_status": e.fetch_status,
+                "fetched_at": str(e.fetched_at) if e.fetched_at else None
+            }
+            for e in evidence
+        ]
     }

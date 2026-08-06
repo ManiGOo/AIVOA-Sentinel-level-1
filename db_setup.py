@@ -82,6 +82,26 @@ class EnrichmentCheck(Base):
     error = Column(Text, default='')
     checked_at = Column(DateTime, default=datetime.utcnow)
 
+class WebEvidence(Base):
+    """Web evidence found by the agent for a specific manufacturer/event."""
+    __tablename__ = 'web_evidence'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_id = Column(UUID(as_uuid=True), nullable=True) # link to the specific record
+    mfr_key = Column(Text, index=True) # normalized manufacturer
+    query = Column(Text)               # the exact search query used
+    title = Column(Text)               # article headline
+    url = Column(Text)                 # canonical article URL
+    source = Column(Text)              # domain / outlet
+    published_date = Column(Date, nullable=True)
+    snippet = Column(Text)             # search-engine snippet
+    full_text = Column(Text)           # fetched article body
+    classification = Column(JSONB, nullable=True) # LLM verdict
+    relevance_score = Column(Integer, default=0)
+    fetch_status = Column(Text)        # meta / fetched / blocked / failed
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
 def init_db():
     # 3. Create the schema if it doesn't exist using a raw connection
     with engine.connect() as conn:
@@ -117,6 +137,8 @@ def init_db():
         "ON sdr_data.regulatory_evidence (company_key)",
         "CREATE INDEX IF NOT EXISTS ix_checks_company_key "
         "ON sdr_data.enrichment_checks (company_key)",
+        "CREATE INDEX IF NOT EXISTS ix_web_evidence_mfr_key "
+        "ON sdr_data.web_evidence (mfr_key)",
     ]
     for sql in migrations:
         with engine.connect() as conn:

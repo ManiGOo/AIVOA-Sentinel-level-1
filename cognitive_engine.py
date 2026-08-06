@@ -296,3 +296,116 @@ def extract_company_names_batch(raw_names: List[str]) -> List[str]:
     except Exception as e:
         print(f"Groq API Error (company names): {e}")
     return [""] * len(raw_names)
+
+def generate_search_queries(record_details: dict) -> List[str]:
+    """Generate search queries for a given regulatory record."""
+    if not GROQ_API_KEY.startswith("gsk_"):
+        return []
+    
+    mfr = record_details.get("manufacturer", "")
+    drug = record_details.get("drug_name", "")
+    batch = record_details.get("batch_no", "")
+    
+    if not mfr:
+        return []
+        
+    prompt = f"""
+    Generate 3-5 Google search queries to find news reports, press releases, or 
+    regulatory actions related to a specific pharmaceutical product failure.
+    
+    Manufacturer: {mfr}
+    Product: {drug}
+    Batch: {batch}
+    
+    Generate queries that would uncover:
+    1. Recalls for this specific batch or product
+    2. GMP or quality issues at this manufacturer
+    3. Regulatory actions by CDSCO, FDA, or other bodies against this manufacturer
+    
+    Respond ONLY with a valid JSON object:
+    {{"queries": ["query1", "query2", ...]}}
+    """
+    
+    try:
+        completion = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[
+                {"role": "system", "content": "You output strict JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.3,
+            max_tokens=512,
+        )
+        data = json.loads(completion.choices[0].message.content)
+        queries = data.get("queries", [])
+        return [str(q) for q in queries][:5]
+    except Exception as e:
+        print(f"Groq query generation error: {e}")
+    return []
+
+def classify_web_evidence(article_text: str, record_details: dict) -> dict:
+    """Classify a fetched web article for relevance and paper-QMS implications."""
+    if not GROQ_API_KEY.startswith("gsk_"):
+        return {"relevance_score": 0, "is_relevant": False, "corroborates_failure": False, 
+                "is_paper_qms": False, "recall_action": False, "severity": "low", "summary": "LLM unavailable"}
+    
+    if not article_text:
+         return {"relevance_score": 0, "is_relevant": False, "corroborates_failure": False, 
+                "is_paper_qms": False, "recall_action": False, "severity": "low", "summary": "No text"}
+                
+    mfr = record_details.get("manufacturer", "")
+    drug = record_details.get("drug_name", "")
+    
+    prompt = f"""
+    You are a Pharmaceutical Compliance Analyst. Analyze the following news article or web page
+    in the context of a known regulatory failure.
+    
+    Manufacturer of interest: {mfr}
+    Product of interest: {drug}
+    
+    Determine:
+    1. relevance_score (0-100): How relevant is this article to the manufacturer or product? 
+       (e.g., 100 if it discusses this specific failure, 70 if it discusses a different failure 
+       at the same manufacturer, 0 if it's unrelated).
+    2. is_relevant (boolean): True if score >= 50.
+    3. corroborates_failure (boolean): True if the article mentions the specific product failure/recall.
+    4. is_paper_qms (boolean): True if the article explicitly cites documentation/data-integrity failures
+       (e.g., missing signatures, manual records, falsification, transcription errors).
+    5. recall_action (boolean): True if the article mentions a product recall or market withdrawal.
+    6. severity (string): "high", "medium", or "low" based on the implications for the manufacturer's QMS.
+    7. summary (string): A 1-sentence summary of the article's findings related to the manufacturer.
+    
+    Article text (truncated):
+    {article_text[:6000]}
+    
+    Respond ONLY with a valid JSON object:
+    {{
+      "relevance_score": integer,
+      "is_relevant": boolean,
+      "corroborates_failure": boolean,
+      "is_paper_qms": boolean,
+      "recall_action": boolean,
+      "severity": "high|medium|low",
+      "summary": "string"
+    }}
+    """
+    
+    try:
+        completion = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[
+                {"role": "system", "content": "You output strict JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.0,
+            max_tokens=512,
+        )
+        return json.loads(completion.choices[0].message.content)
+    except Exception as e:
+        print(f"Groq classification error: {e}")
+    
+    return {"relevance_score": 0, "is_relevant": False, "corroborates_failure": False, 
+            "is_paper_qms": False, "recall_action": False, "severity": "low", "summary": "Error parsing"}
+

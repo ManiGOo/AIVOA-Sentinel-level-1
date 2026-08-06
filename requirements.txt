@@ -9,3 +9,7 @@ fastapi
 uvicorn
 temporalio
 playwright==1.62.0
+tavily-python
+readability-lxml
+lxml
+html2text
