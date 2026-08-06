@@ -13,15 +13,20 @@ with workflow.unsafe.imports_passed_through():
 
 @activity.defn
 async def generate_queries_activity(event_id: str) -> list[str]:
-    db = SessionLocal()
-    try:
-        event = db.query(RegulatoryEvent).filter(RegulatoryEvent.event_id == event_id).first()
-        if not event or not event.raw_details:
-            return []
-        queries = generate_search_queries(event.raw_details)
-        return queries
-    finally:
-        db.close()
+    """Generate search queries for one event. The blocking DB query + Groq LLM
+    call run in a thread so they cannot freeze the worker event loop."""
+
+    def _work() -> list[str]:
+        db = SessionLocal()
+        try:
+            event = db.query(RegulatoryEvent).filter(RegulatoryEvent.event_id == event_id).first()
+            if not event or not event.raw_details:
+                return []
+            return generate_search_queries(event.raw_details)
+        finally:
+            db.close()
+
+    return await asyncio.to_thread(_work)
 
 @activity.defn
 async def search_web_for_queries(queries: list[str]) -> list[dict]:

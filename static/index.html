@@ -191,7 +191,7 @@
         </div>
     </div>
 
-    <script src="/static/signal-card.js?v=2"></script>
+    <script src="/static/signal-card.js?v=3"></script>
     <script>
         let allSignals = [];
         let totalCount = 0;
@@ -480,6 +480,84 @@
                 </div>`;
             }
             box.innerHTML = html;
+        }
+
+        async function searchWeb(eventId) {
+            if (VIEW_ONLY) { alert('Web search is disabled in this view-only deployment.'); return; }
+            const btn = document.getElementById('webBtn-' + eventId);
+            const box = document.getElementById('webResult-' + eventId);
+            if (!btn || btn.disabled) return;
+            btn.disabled = true;
+            const original = btn.innerHTML;
+            btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6l3 2"/></svg> Searching…';
+            box.classList.remove('hidden');
+            box.innerHTML = '<p class="text-xs text-teal-300 animate-pulse">Agentic web search running — takes ~30-60s…</p>';
+            try {
+                const res = await fetch('/api/v1/web-evidence/search/' + eventId, { method: 'POST' });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Failed to start web search');
+                const workflowId = data.workflow_id;
+
+                const deadline = Date.now() + 6 * 60 * 1000;
+                let done = false;
+                while (Date.now() < deadline) {
+                    await sleep(5000);
+                    try {
+                        const s = await (await fetch('/api/v1/enrichment/status/' + workflowId)).json();
+                        if (s.state === 'COMPLETED') { done = true; break; }
+                        if (['FAILED', 'TERMINATED', 'CANCELED'].includes(s.state)) {
+                            box.innerHTML = '<p class="text-xs text-red-400">Web search failed: ' + esc(s.error || s.state) + '</p>';
+                            btn.disabled = false;
+                            btn.innerHTML = original;
+                            return;
+                        }
+                    } catch (e) { /* transient — keep polling */ }
+                }
+                if (!done) {
+                    box.innerHTML = '<p class="text-xs text-yellow-300">Web search still running in the background — refresh this card later.</p>';
+                } else {
+                    await renderWebResult(box, eventId);
+                }
+            } catch (e) {
+                box.innerHTML = '<p class="text-xs text-red-400">Web search failed: ' + esc(e.message) + '</p>';
+                btn.disabled = false;
+                btn.innerHTML = original;
+            }
+        }
+
+        async function renderWebResult(box, eventId) {
+            try {
+                const res = await fetch('/api/v1/records/' + eventId + '/web-evidence');
+                const data = await res.json();
+                const ev = data.evidence || [];
+                if (!ev.length) {
+                    box.innerHTML = '<div class="p-2 rounded border border-slate-700 bg-slate-800/50 text-xs text-slate-400">No web evidence found for this event.</div>';
+                    return;
+                }
+                const items = ev.map(e => {
+                    const cls = e.classification || {};
+                    const rel = cls.relevance_score != null ? Math.round(cls.relevance_score * 100) + '%'
+                        : (e.relevance_score ? Math.round(e.relevance_score * 100) + '%' : '—');
+                    const badge = cls.is_paper_qms
+                        ? '<span class="ml-1 px-1.5 py-0.5 rounded bg-yellow-900/60 text-yellow-300 font-semibold">PAPER-QMS</span>'
+                        : (cls.is_relevant ? '<span class="ml-1 px-1.5 py-0.5 rounded bg-teal-900/60 text-teal-300 font-semibold">RELEVANT</span>' : '');
+                    const status = e.fetch_status === 'fetched' ? 'fetched'
+                        : e.fetch_status === 'failed' ? '<span class="text-red-400">fetch failed</span>'
+                        : '<span class="text-slate-500">' + esc(e.fetch_status || 'queued') + '</span>';
+                    const summary = cls.summary
+                        ? '<p class="mt-1 text-slate-400">' + esc(cls.summary) + '</p>'
+                        : (e.snippet ? '<p class="mt-1 text-slate-500 truncate">' + esc(e.snippet) + '</p>' : '');
+                    return `<div class="p-2 rounded border border-slate-700 bg-slate-800/40 text-xs">
+                        <a href="${esc(e.url)}" target="_blank" rel="noopener noreferrer" class="text-teal-300 hover:text-teal-200 font-semibold break-all">${esc(e.title || e.url)}</a>
+                        <span class="text-slate-500"> · ${esc(e.source || '')}</span>${badge}
+                        <span class="text-slate-500"> · relevance ${rel} · ${status}</span>
+                        ${summary}
+                    </div>`;
+                }).join('');
+                box.innerHTML = '<div class="space-y-1.5">' + items + '</div>';
+            } catch (e) {
+                box.innerHTML = '<p class="text-xs text-red-400">Failed to load web evidence: ' + esc(e.message) + '</p>';
+            }
         }
 
         function formatDuration(seconds) {
