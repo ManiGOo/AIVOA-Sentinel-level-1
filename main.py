@@ -454,6 +454,7 @@ async def enrichment_status(workflow_id: str):
                     "paper_qms_findings": summary.get("paper_qms_findings", 0) + batch.get("paper_qms_findings", 0),
                     "errors": summary.get("errors", []) + batch.get("errors", []),
                     "firms": summary.get("firms", []) + batch.get("firms", []),
+                    "searched": summary.get("searched", []) + batch.get("searched", []),
                     "skipped_firms": summary.get("skipped_firms", []) + batch.get("skipped_firms", []),
                 })
 

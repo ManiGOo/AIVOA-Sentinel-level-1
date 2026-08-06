@@ -123,6 +123,7 @@ async def fetch_external_evidence(firm_names: list[str], source: str = "fda",
     return {
         "source": source,
         "firms": firm_names,
+        "searched": [name for name, _ in plans],
         "findings": len(findings),
         "inserted": inserted,
         "skipped": skipped,

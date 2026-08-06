@@ -48,6 +48,16 @@ COMPANY_TOKENS = (
     r"scientific|biologicals?|botanicals?|diagnostics?|devices?|medical"
 )
 COMPANY_SUFFIX_RE = re.compile(rf"(?i)\b({COMPANY_TOKENS})\b")
+# Business-type tokens only (excludes legal-entity words like private/ltd) —
+# used to detect a *second* company chunk in _company_cut.
+BUSINESS_TOKEN_RE = re.compile(
+    rf"(?i)\b(pharma(?:ceuticals?|chem)?|healthcare|health\s*care|laborator(?:ies|y)\b|labs?\b"
+    rf"|biotec(h)?|life\s*science\s*|lifesciences|bioscience|medicare|medicines?|remedies"
+    rf"|organics|drugs|chemicals?|industr(?:ies|y)|enterprises?|trading|traders?|exports?"
+    rf"|imports?|formulations?|sciences?|naturals|ayurveda|capsules?|specialit(?:ies|y)"
+    rf"|surgicals?|parenterals?|care|genetics?|novitas|halden|curation|health|scientific"
+    rf"|biologicals?|botanicals?|diagnostics?|devices?|medical)\b"
+)
 COMPANY_SUFFIX_STRICT_RE = re.compile(
     rf"(?i)\b(ltd\.?|limited|pvt\.?|private|llp|corp\.?|corporation|inc\.?|co\.?|company"
     rf"|pharma(?:ceuticals?|chem)?|healthcare|laborator(?:ies|y)\b|labs?\b|biotec(h)?"
@@ -78,7 +88,7 @@ def _company_cut(text: str) -> str:
     if not ms:
         return text.rstrip(" ,;:-")
     out = text[: ms[-1].end()].rstrip(" ,;:-")
-    if len(ms) > 1 and COMPANY_SUFFIX_RE.search(text[ms[0].end(): ms[-1].start()]):
+    if len(ms) > 1 and BUSINESS_TOKEN_RE.search(text[ms[0].end(): ms[-1].start()]):
         out = text[: ms[0].end()].rstrip(" ,;:-")
     return out
 

@@ -522,19 +522,21 @@
         }
 
         function renderEnrichResult(box, summaries) {
-            const agg = { findings: 0, inserted: 0, paper: 0, errors: [] };
+            const agg = { findings: 0, inserted: 0, paper: 0, errors: [], searched: [] };
             Object.values(summaries).forEach(s => {
                 const sm = s.summary || {};
                 agg.findings += sm.findings || 0;
                 agg.inserted += sm.inserted || 0;
                 agg.paper += sm.paper_qms_findings || 0;
                 (sm.errors || []).forEach(e => agg.errors.push(e));
+                (sm.searched || []).forEach(n => { if (agg.searched.indexOf(n) < 0) agg.searched.push(n); });
             });
             let html = '';
             if (agg.findings > 0) {
                 html = `<div class="p-2 rounded border border-green-700/50 bg-green-900/20 text-xs">
                     <p class="text-green-300 font-semibold">✓ ${agg.findings} external finding(s)${agg.inserted ? ` · ${agg.inserted} saved` : ''}</p>
                     ${agg.paper > 0 ? `<p class="mt-1 text-yellow-300 font-semibold">⚠ ${agg.paper} Paper-QMS flagged</p>` : ''}
+                    <p class="mt-1 text-slate-400 break-all">Searched: ${esc(agg.searched.join(' · '))}</p>
                 </div>`;
             } else if (agg.errors.length) {
                 html = `<div class="p-2 rounded border border-red-700/50 bg-red-900/20 text-xs text-red-300">
@@ -543,6 +545,7 @@
             } else {
                 html = `<div class="p-2 rounded border border-slate-700 bg-slate-800/50 text-xs text-slate-400">
                     No FDA / EudraGMDP findings for this manufacturer.
+                    ${agg.searched.length ? `<p class="mt-1 text-slate-500 break-all">Searched: ${esc(agg.searched.join(' · '))}</p>` : ''}
                 </div>`;
             }
             box.innerHTML = html;
