@@ -1,9 +1,12 @@
 import os
 import json
+import re
 from dotenv import load_dotenv
 from groq import Groq
 from pydantic import BaseModel, ValidationError
 from typing import List
+
+from company_names import clean_company_name, PAREN
 
 load_dotenv()
 GROQ_API_KEY_FALLBACK = "dummy_key"
@@ -405,6 +408,49 @@ def generate_search_queries(record_details: dict) -> List[str]:
         print(f"Groq query generation error: {e}")
     return []
 
+def _focused_excerpt(text: str, record_details: dict,
+                     head_len: int = 1800, window: int = 2200,
+                     max_len: int = 6000) -> str:
+    """Build a classifier excerpt from a possibly-long document (e.g., monthly
+    NSQ alert tables listing hundreds of drugs). A blind [:6000] truncation can
+    cut away the manufacturer's own row; instead we keep the document head plus
+    a window around the first mention of the manufacturer or product."""
+    if not text:
+        return text
+
+    needles = []
+    mfr = (record_details.get("manufacturer") or "").strip()
+    drug = (record_details.get("drug_name") or "").strip()
+
+    mfr_clean = clean_company_name(PAREN.sub("", mfr)).lower().strip()
+    if mfr_clean:
+        needles.append(mfr_clean)
+        needles.append(re.sub(r"[^a-z0-9 ]+", " ", mfr_clean).strip())
+
+    drug_low = re.sub(r"\s+", " ", drug.lower()).strip()
+    if drug_low:
+        needles.append(drug_low)
+        words = drug_low.split()
+        if len(words) >= 2:
+            needles.append(" ".join(words[:2]))
+
+    low = text.lower()
+    pos = None
+    for n in needles:
+        if not n:
+            continue
+        i = low.find(n)
+        if i >= 0 and (pos is None or i < pos):
+            pos = i
+
+    if pos is None or pos <= head_len:
+        return text[:max_len]
+
+    start = max(0, pos - window)
+    end = min(len(text), pos + window)
+    return text[:head_len] + "\n...\n" + text[start:end]
+
+
 def classify_web_evidence(article_text: str, record_details: dict) -> dict:
     """Classify a fetched web article for relevance and paper-QMS implications."""
     if not GROQ_API_KEY.startswith("gsk_"):
@@ -438,7 +484,7 @@ def classify_web_evidence(article_text: str, record_details: dict) -> dict:
     7. summary (string): A 1-sentence summary of the article's findings related to the manufacturer.
     
     Article text (truncated):
-    {article_text[:6000]}
+    {_focused_excerpt(article_text, record_details)}
     
     Respond ONLY with a valid JSON object:
     {{
