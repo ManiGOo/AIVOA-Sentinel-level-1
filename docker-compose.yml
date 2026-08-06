@@ -18,7 +18,9 @@ services:
       - temporal
 
   worker:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
     env_file: .env
     environment:
       - TEMPORAL_HOST=temporal:7233

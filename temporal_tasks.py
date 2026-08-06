@@ -1,5 +1,6 @@
 from temporalio import activity, workflow
 from datetime import timedelta, datetime, date
+import asyncio
 import time
 
 with workflow.unsafe.imports_passed_through():
@@ -265,8 +266,11 @@ async def process_batch_with_llm(data: dict) -> dict:
     items = data["items"]
     event_type = data["event_type"]
     
-    # We will pass the list of items to cognitive_engine
-    llm_results = analyze_cdsco_failure_batch(items)
+    # We will pass the list of items to cognitive_engine.
+    # Run in a thread so the blocking Groq HTTP call cannot freeze the
+    # worker's event loop (which previously left the activity stuck until
+    # the start-to-close timeout redelivered it).
+    llm_results = await asyncio.to_thread(analyze_cdsco_failure_batch, items)
     
     processed_items = []
     for i, item in enumerate(items):

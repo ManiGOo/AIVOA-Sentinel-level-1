@@ -8,3 +8,4 @@ pydantic
 fastapi
 uvicorn
 temporalio
+playwright==1.62.0

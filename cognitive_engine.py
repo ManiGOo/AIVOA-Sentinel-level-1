@@ -6,7 +6,13 @@ from pydantic import BaseModel, ValidationError
 from typing import List
 
 load_dotenv()
-client = Groq(api_key=os.environ.get("GROQ_API_KEY", "dummy_key"))
+GROQ_API_KEY_FALLBACK = "dummy_key"
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", GROQ_API_KEY_FALLBACK)
+client = Groq(
+    api_key=GROQ_API_KEY,
+    timeout=60.0,
+    max_retries=2,
+)
 
 class ComplianceAuditResult(BaseModel):
     entity_name: str
@@ -21,7 +27,7 @@ class BatchComplianceAuditResult(BaseModel):
     results: List[ComplianceAuditResult]
 
 def analyze_cdsco_failure_batch(batch_items: List[dict]) -> dict:
-    if os.environ.get("GROQ_API_KEY", "dummy_key") == "dummy_key":
+    if not GROQ_API_KEY.startswith("gsk_"):
         print("Warning: GROQ_API_KEY is not set. Skipping LLM analysis.")
         return {str(i): {} for i in range(len(batch_items))}
         
