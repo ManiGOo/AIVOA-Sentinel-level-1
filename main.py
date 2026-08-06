@@ -240,8 +240,11 @@ def _build_signal_card(event, counts, checks_by_key, evidence_by_key, web_by_key
 
     web_bonus = _web_evidence_bonus(card_web_evidence)
     new_score = round((base + paper_bonus + mandate_bonus) * recency) + repeat_bonus + web_bonus
+    # Grounded ceiling for THIS card: only bonuses it can actually earn.
+    # paper caps at 30 (explicit), mandate only if a flag applies (it's 0 or 20),
+    # repeat is already capped at this company's prior-incident count, web caps at 25.
     max_base = 40 if event.event_type == 'SPURIOUS_DRUG' else 20
-    max_possible = round((max_base + 30 + 20) * recency) + 30 + 25
+    max_possible = round((max_base + 30 + mandate_bonus) * recency) + repeat_bonus + 25
 
     event.paper_evidence_class = pa["class"]
     event.paper_confidence = pa["confidence"]
