@@ -1,7 +1,11 @@
 /* Web Evidence UI — redesigned modal + inline result cards for the agentic
  * web-evidence feature. Loaded from index.html after signal-card.js. Globals
  * (showWebEvidenceModal / closeWebEvidenceModal / renderWebResult) are called
- * from inline onclick handlers and from the main dashboard script. */
+ * from inline onclick handlers and from the main dashboard script.
+ *
+ * IMPORTANT: All layout is done with inline `style` attributes because the
+ * Tailwind CDN only generates classes that exist in the initial DOM. Anything
+ * built purely in JS (this whole modal) would otherwise be unstyled. */
 
 (function () {
     'use strict';
@@ -9,14 +13,14 @@
     const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
     const ICONS = {
-        globe: '<svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.6 9h16.8M3.6 15h16.8M12 3a15 15 0 010 18M12 3a15 15 0 000 18"/></svg>',
-        check: '<svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>',
-        external: '<svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5h5v5M19 5l-9 9M19 13v6H5V5h6"/></svg>',
-        refresh: '<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.5m15-.5V4m0 0h-5m5 0l-4 4M4 20v-5h.5m15 .5V20m0 0h-5m5 0l-4-4"/></svg>',
-        search: '<svg class="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z"/></svg>',
-        spinner: '<svg class="w-5 h-5 text-teal-400 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6l3 2"/></svg>',
-        file: '<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m-7-8h2m0 0V4h8v16H4V8h5zm0 0l5-5"/></svg>',
-        paper: '<svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.6 2A9 9 0 1112 3a9 9 0 018.6 9z"/></svg>',
+        globe: '<svg style="width:20px;height:20px" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.6 9h16.8M3.6 15h16.8M12 3a15 15 0 010 18M12 3a15 15 0 000 18"/></svg>',
+        check: '<svg style="width:12px;height:12px" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>',
+        external: '<svg style="width:12px;height:12px" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5h5v5M19 5l-9 9M19 13v6H5V5h6"/></svg>',
+        refresh: '<svg style="width:14px;height:14px" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.5m15-.5V4m0 0h-5m5 0l-4 4M4 20v-5h.5m15 .5V20m0 0h-5m5 0l-4-4"/></svg>',
+        search: '<svg style="width:28px;height:28px" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z"/></svg>',
+        spinner: '<svg style="width:20px;height:20px" class="animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6l3 2"/></svg>',
+        file: '<svg style="width:16px;height:16px" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m-7-8h2m0 0V4h8v16H4V8h5zm0 0l5-5"/></svg>',
+        paper: '<svg style="width:12px;height:12px" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.6 2A9 9 0 1112 3a9 9 0 018.6 9z"/></svg>',
     };
 
     function scoreOf(e) {
@@ -30,32 +34,36 @@
         return e.source || (e.url ? (e.url.split('/')[2] || '') : '');
     }
 
+    const badge = (text, bg, fg, bold) =>
+        '<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:9999px;' +
+        'font-size:11px;font-weight:' + (bold ? 700 : 600) + ';line-height:1.4;background:' + bg + ';color:' + fg + ';white-space:nowrap">' + text + '</span>';
+
     function relevanceBadgeHtml(score) {
-        if (score == null) return '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-slate-700/60 text-slate-400">UNSCORED</span>';
-        if (score >= 70) return '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-teal-500/20 text-teal-300">RELEVANT</span>';
-        if (score >= 50) return '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/20 text-amber-300">PARTIAL</span>';
-        return '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-slate-700/60 text-slate-500">NOT RELEVANT</span>';
+        if (score == null) return badge('UNSCORED', 'rgba(51,65,85,0.6)', '#94a3b8', false);
+        if (score >= 70) return badge('RELEVANT', 'rgba(20,184,166,0.2)', '#5eead4', false);
+        if (score >= 50) return badge('PARTIAL', 'rgba(245,158,11,0.2)', '#fcd34d', false);
+        return badge('NOT RELEVANT', 'rgba(51,65,85,0.6)', '#64748b', false);
     }
 
     function statusBadgeHtml(status) {
-        if (status === 'fetched') return '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-500/15 text-emerald-300">' + ICONS.check + 'Fetched</span>';
-        if (status === 'failed') return '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-red-500/15 text-red-300">Fetch failed</span>';
-        if (status === 'blocked') return '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-500/15 text-amber-300">Blocked</span>';
-        return '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-700/60 text-slate-500">' + esc(status || 'Queued') + '</span>';
+        if (status === 'fetched') return badge(ICONS.check + 'Fetched', 'rgba(16,185,129,0.15)', '#6ee7b7', false);
+        if (status === 'failed') return badge('Fetch failed', 'rgba(239,68,68,0.15)', '#fca5a5', false);
+        if (status === 'blocked') return badge('Blocked', 'rgba(245,158,11,0.15)', '#fcd34d', false);
+        return badge(esc(status || 'Queued'), 'rgba(51,65,85,0.6)', '#64748b', false);
     }
 
     function relevanceBarHtml(score) {
         if (score == null) return '';
-        const color = score >= 70 ? 'bg-teal-400' : score >= 50 ? 'bg-amber-400' : 'bg-slate-500';
-        const text = score >= 70 ? 'text-teal-300' : score >= 50 ? 'text-amber-300' : 'text-slate-400';
+        const color = score >= 70 ? '#2dd4bf' : score >= 50 ? '#fbbf24' : '#64748b';
+        const text = score >= 70 ? '#5eead4' : score >= 50 ? '#fcd34d' : '#94a3b8';
         const width = Math.max(5, Math.min(100, score));
-        return '<div class="flex items-center gap-2 max-w-[220px]">' +
-            '<span class="text-[11px] font-bold ' + text + ' w-9 shrink-0 text-right">' + score + '%</span>' +
-            '<div class="flex-1 h-1.5 rounded-full bg-slate-800 overflow-hidden">' +
-            '<div class="h-full ' + color + ' rounded-full transition-all duration-500" style="width:' + width + '%"></div></div></div>';
+        return '<div style="display:flex;align-items:center;gap:8px;max-width:220px">' +
+            '<span style="font-size:11px;font-weight:700;color:' + text + ';width:36px;flex-shrink:0;text-align:right">' + score + '%</span>' +
+            '<div style="flex:1;height:6px;border-radius:9999px;background:#1e293b;overflow:hidden">' +
+            '<div style="height:100%;border-radius:9999px;background:' + color + ';transition:width .5s;width:' + width + '%"></div></div></div>';
     }
 
-    function webEvidenceItemHtml(e) {
+    function webEvidenceItemHtml(e, last) {
         const score = scoreOf(e);
         const cls = e.classification || {};
         const paper = !!(cls.is_paper_qms || e.is_paper_qms);
@@ -65,35 +73,38 @@
         const domain = domainOf(e);
 
         const badges = [
-            paper ? '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-yellow-500/20 text-yellow-300">' + ICONS.paper + 'PAPER-QMS</span>' : '',
+            paper ? badge(ICONS.paper + 'PAPER-QMS', 'rgba(234,179,8,0.2)', '#fde047', true) : '',
             relevanceBadgeHtml(score),
             statusBadgeHtml(e.fetch_status),
         ].filter(Boolean).join(' ');
 
-        return '<article class="group rounded-xl border border-slate-700/80 bg-slate-800/40 hover:border-teal-500/50 hover:bg-slate-800/70 transition-colors p-4">' +
-            '<div class="flex items-start justify-between gap-3">' +
+        return '<article style="display:block;margin-bottom:' + (last ? '0' : '10px') + ';padding:16px;' +
+            'border:1px solid rgba(51,65,85,0.8);border-radius:12px;background:rgba(30,41,59,0.4)">' +
+            '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">' +
             '<a href="' + esc(e.url) + '" target="_blank" rel="noopener noreferrer" ' +
-            'class="text-sm font-semibold text-teal-300 hover:text-teal-200 hover:underline leading-snug break-words">' + esc(title) + '</a>' +
-            '<span class="text-[11px] text-slate-500 shrink-0 mt-1">' + esc(domain) + '</span></div>' +
-            '<div class="mt-2.5 flex flex-wrap items-center gap-1.5">' + badges + '</div>' +
-            (score != null ? '<div class="mt-3">' + relevanceBarHtml(score) + '</div>' : '') +
-            (summary ? '<p class="mt-3 text-[13px] leading-relaxed text-slate-300">' + esc(summary) + '</p>'
-                : (snippet ? '<p class="mt-3 text-[13px] leading-relaxed text-slate-500">' + esc(snippet.slice(0, 240)) + '…</p>' : '')) +
-            '<div class="mt-3 flex items-center justify-between gap-3 text-[11px] text-slate-500">' +
-            '<span class="truncate">' + esc(e.url) + '</span>' +
-            '<a href="' + esc(e.url) + '" target="_blank" rel="noopener noreferrer" class="shrink-0 inline-flex items-center gap-1 text-teal-400 hover:text-teal-300 font-semibold group-hover:gap-1.5 transition-all">Open ' + ICONS.external + '</a>' +
+            'style="font-size:14px;font-weight:600;color:#5eead4;text-decoration:none;line-height:1.4;overflow-wrap:break-word">' + esc(title) + '</a>' +
+            '<span style="font-size:11px;color:#64748b;flex-shrink:0;margin-top:4px">' + esc(domain) + '</span></div>' +
+            '<div style="margin-top:10px;display:flex;flex-wrap:wrap;align-items:center;gap:6px">' + badges + '</div>' +
+            (score != null ? '<div style="margin-top:12px">' + relevanceBarHtml(score) + '</div>' : '') +
+            (summary ? '<p style="margin:12px 0 0;font-size:13px;line-height:1.6;color:#cbd5e1">' + esc(summary) + '</p>'
+                : (snippet ? '<p style="margin:12px 0 0;font-size:13px;line-height:1.6;color:#64748b">' + esc(snippet.slice(0, 240)) + '…</p>' : '')) +
+            '<div style="margin-top:12px;display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:11px;color:#64748b">' +
+            '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(e.url) + '</span>' +
+            '<a href="' + esc(e.url) + '" target="_blank" rel="noopener noreferrer" ' +
+            'style="flex-shrink:0;display:inline-flex;align-items:center;gap:4px;color:#2dd4bf;font-weight:600;text-decoration:none">Open ' + ICONS.external + '</a>' +
             '</div></article>';
     }
 
     function loadingHtml() {
-        return '<div class="flex items-center justify-center gap-3 py-16">' + ICONS.spinner + '<span class="text-sm text-slate-400">Fetching evidence…</span></div>';
+        return '<div style="display:flex;align-items:center;justify-content:center;gap:12px;padding:64px 0;color:#5eead4">' +
+            ICONS.spinner + '<span style="font-size:14px;color:#94a3b8">Fetching evidence…</span></div>';
     }
 
     function emptyStateHtml() {
-        return '<div class="flex flex-col items-center justify-center py-16 text-center px-6">' +
-            '<div class="w-14 h-14 rounded-full bg-slate-800 flex items-center justify-center mb-4"><span class="text-slate-600">' + ICONS.search + '</span></div>' +
-            '<p class="text-sm font-semibold text-slate-300">No web evidence yet</p>' +
-            '<p class="text-xs text-slate-500 mt-1.5 max-w-xs leading-relaxed">Run an agentic web search for this company to fetch regulatory alerts, recalls and news reports.</p></div>';
+        return '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:64px 24px;text-align:center">' +
+            '<div style="width:56px;height:56px;border-radius:9999px;background:#1e293b;display:flex;align-items:center;justify-content:center;margin-bottom:16px;color:#475569">' + ICONS.search + '</div>' +
+            '<p style="font-size:14px;font-weight:600;color:#cbd5e1;margin:0">No web evidence yet</p>' +
+            '<p style="font-size:12px;color:#64748b;margin:6px auto 0;max-width:288px;line-height:1.6">Run an agentic web search for this company to fetch regulatory alerts, recalls and news reports.</p></div>';
     }
 
     function closeWebEvidenceModal() {
@@ -110,22 +121,35 @@
 
         const overlay = document.createElement('div');
         overlay.id = 'webModal';
-        overlay.className = 'fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm';
+        overlay.style.cssText =
+            'position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;' +
+            'padding:16px;background:rgba(0,0,0,0.75);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);';
         overlay.innerHTML =
-            '<div class="w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl overflow-hidden">' +
-            '<header class="px-5 py-4 border-b border-slate-800 flex items-start justify-between gap-4 shrink-0">' +
-            '<div class="flex items-start gap-3">' +
-            '<div class="w-10 h-10 rounded-xl bg-teal-500/15 flex items-center justify-center shrink-0 text-teal-400">' + ICONS.globe + '</div>' +
-            '<div><h3 class="text-base font-bold text-white leading-tight">Web Evidence</h3>' +
-            '<p class="text-xs text-slate-400 mt-0.5">Fetched regulatory &amp; news sources for this company</p></div></div>' +
-            '<button onclick="closeWebEvidenceModal()" aria-label="Close" class="text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg w-8 h-8 flex items-center justify-center transition-colors text-xl leading-none">×</button>' +
-            '</div>' +
-            '<div id="webModalBody" class="p-4 space-y-2.5 overflow-y-auto"></div>' +
-            '<footer class="px-5 py-3 border-t border-slate-800 flex items-center justify-between gap-3 shrink-0">' +
-            '<span id="webModalCount" class="text-xs text-slate-500"></span>' +
-            '<div class="flex items-center gap-2">' +
-            '<button onclick="searchWeb(\'' + esc(eventId) + '\')" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-teal-600/20 text-teal-300 hover:bg-teal-600/30 transition-colors inline-flex items-center gap-1.5">' + ICONS.refresh + 'Re-run search</button>' +
-            '<button onclick="closeWebEvidenceModal()" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 transition-colors">Close</button>' +
+            '<div style="width:100%;max-width:672px;max-height:85vh;display:flex;flex-direction:column;' +
+            'background:#0f172a;border:1px solid #334155;border-radius:16px;overflow:hidden;' +
+            'box-shadow:0 25px 50px -12px rgba(0,0,0,0.8)">' +
+            '<header style="flex-shrink:0;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;' +
+            'padding:16px 20px;border-bottom:1px solid #1e293b">' +
+            '<div style="display:flex;align-items:flex-start;gap:12px">' +
+            '<div style="width:40px;height:40px;border-radius:12px;background:rgba(20,184,166,0.15);' +
+            'display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#2dd4bf">' + ICONS.globe + '</div>' +
+            '<div><h3 style="font-size:16px;font-weight:700;color:#fff;line-height:1.25;margin:0">Web Evidence</h3>' +
+            '<p style="font-size:12px;color:#94a3b8;margin:2px 0 0">Fetched regulatory &amp; news sources for this company</p></div></div>' +
+            '<button onclick="closeWebEvidenceModal()" aria-label="Close" ' +
+            'style="color:#94a3b8;background:transparent;border:0;border-radius:8px;width:32px;height:32px;' +
+            'display:flex;align-items:center;justify-content:center;font-size:20px;line-height:1;cursor:pointer">×</button>' +
+            '</header>' +
+            '<div id="webModalBody" style="padding:16px;overflow-y:auto;flex:1;min-height:0"></div>' +
+            '<footer style="flex-shrink:0;display:flex;align-items:center;justify-content:space-between;gap:12px;' +
+            'padding:12px 20px;border-top:1px solid #1e293b">' +
+            '<span id="webModalCount" style="font-size:12px;color:#64748b"></span>' +
+            '<div style="display:flex;align-items:center;gap:8px">' +
+            '<button onclick="searchWeb(\'' + esc(eventId) + '\')" ' +
+            'style="font-size:12px;font-weight:600;padding:6px 12px;border-radius:8px;border:0;cursor:pointer;' +
+            'background:rgba(13,148,136,0.2);color:#5eead4;display:inline-flex;align-items:center;gap:6px">' + ICONS.refresh + 'Re-run search</button>' +
+            '<button onclick="closeWebEvidenceModal()" ' +
+            'style="font-size:12px;font-weight:600;padding:6px 12px;border-radius:8px;border:0;cursor:pointer;' +
+            'background:#1e293b;color:#cbd5e1">Close</button>' +
             '</div></footer></div>';
         document.body.appendChild(overlay);
         document.body.style.overflow = 'hidden';
@@ -136,7 +160,7 @@
 
         function renderItems(ev) {
             count.textContent = ev.length + (ev.length === 1 ? ' source' : ' sources');
-            body.innerHTML = ev.length ? ev.map(webEvidenceItemHtml).join('') : emptyStateHtml();
+            body.innerHTML = ev.length ? ev.map((it, i) => webEvidenceItemHtml(it, i === ev.length - 1)).join('') : emptyStateHtml();
         }
 
         if (cached && cached.length) {
@@ -150,7 +174,7 @@
             const data = await res.json();
             renderItems(data.evidence || []);
         } catch (err) {
-            body.innerHTML = '<p class="text-sm text-red-400">Failed to load web evidence: ' + esc(err.message) + '</p>';
+            body.innerHTML = '<p style="font-size:14px;color:#f87171">Failed to load web evidence: ' + esc(err.message) + '</p>';
         }
     }
 
@@ -160,12 +184,12 @@
             const data = await res.json();
             const ev = data.evidence || [];
             if (!ev.length) {
-                box.innerHTML = '<p class="text-xs text-slate-400">No web evidence found for this event.</p>';
+                box.innerHTML = '<p style="font-size:12px;color:#94a3b8">No web evidence found for this event.</p>';
                 return;
             }
-            box.innerHTML = '<div class="space-y-2">' + ev.map(webEvidenceItemHtml).join('') + '</div>';
+            box.innerHTML = ev.map((it, i) => webEvidenceItemHtml(it, i === ev.length - 1)).join('');
         } catch (e) {
-            box.innerHTML = '<p class="text-xs text-red-400">Failed to load web evidence: ' + esc(e.message) + '</p>';
+            box.innerHTML = '<p style="font-size:12px;color:#f87171">Failed to load web evidence: ' + esc(e.message) + '</p>';
         }
     }
 
