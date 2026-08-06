@@ -96,6 +96,17 @@ def _strip_noise(text: str) -> str:
     return text
 
 
+def strip_legal_suffix(name: str) -> str:
+    """Drop a trailing legal-entity suffix for search recall.
+
+    e.g. "Cipla Ltd" -> "Cipla"; "Avlab S.r.l." (unmatched) is left intact.
+    """
+    s = name.strip().rstrip("., ")
+    return re.sub(
+        r"(?i)\s+(?:(?:pvt\.?|private)\s+)?(?:ltd\.?|limited|llp|inc\.?|corporation|corp\.?)\s*$",
+        "", s).strip()
+
+
 def clean_company_name(raw: str) -> str:
     """Best-effort clean trading name from a CDSCO manufacturer string."""
     if not raw:

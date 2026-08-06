@@ -348,12 +348,21 @@
                     </div>
 
                     ${VIEW_ONLY ? '' : `
-                    <button onclick="approveCampaign('${signal.event_id}')" class="w-full py-2 bg-slate-700 hover:bg-green-600 transition-colors rounded text-sm font-semibold flex items-center justify-center gap-2 mt-auto">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                        </svg>
-                        Approve & Dispatch
-                    </button>`}
+                    <div class="mt-auto space-y-2">
+                        <button onclick="approveCampaign('${signal.event_id}')" class="w-full py-2 bg-slate-700 hover:bg-green-600 transition-colors rounded text-sm font-semibold flex items-center justify-center gap-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                            </svg>
+                            Approve & Dispatch
+                        </button>
+                        <button id="enrichBtn-${signal.event_id}" onclick="enrichCard('${signal.event_id}')" class="w-full py-2 bg-indigo-800 hover:bg-indigo-600 transition-colors rounded text-sm font-semibold flex items-center justify-center gap-2">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" />
+                            </svg>
+                            Check FDA + EudraGMDP
+                        </button>
+                        <div id="enrichResult-${signal.event_id}" class="hidden"></div>
+                    </div>`}
                 `;
                 container.appendChild(card);
             });
@@ -458,6 +467,85 @@
             } catch (e) {
                 alert("Approval failed!");
             }
+        }
+
+        const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+        async function enrichCard(eventId) {
+            if (VIEW_ONLY) { alert('Enrichment is disabled in this view-only deployment.'); return; }
+            const btn = document.getElementById('enrichBtn-' + eventId);
+            const box = document.getElementById('enrichResult-' + eventId);
+            if (!btn || btn.disabled) return;
+            btn.disabled = true;
+            const original = btn.innerHTML;
+            btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.5m15-.5V4m0 0h-5m5 0l-4 4M4 20v-5h.5m15 .5V20m0 0h-5m5 0l-4-4" transform="rotate(45 12 12)"/></svg> Checking FDA + EudraGMDP…';
+            box.classList.remove('hidden');
+            box.innerHTML = '<p class="text-xs text-indigo-300 animate-pulse">Enrichment running — this takes ~30-60s…</p>';
+            try {
+                const res = await fetch('/api/v1/enrichment/check', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ event_id: eventId, source: 'all' })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Failed to start enrichment');
+                const workflowIds = data.workflow_ids || [];
+                if (!workflowIds.length) throw new Error('No enrichment workflows started');
+
+                const summaries = {};
+                const deadline = Date.now() + 6 * 60 * 1000;
+                let pending = workflowIds.slice();
+                while (pending.length && Date.now() < deadline) {
+                    await sleep(5000);
+                    const stillPending = [];
+                    for (const wid of pending) {
+                        try {
+                            const s = await (await fetch('/api/v1/enrichment/status/' + wid)).json();
+                            summaries[wid] = s;
+                            if (s.state === 'RUNNING') stillPending.push(wid);
+                        } catch (e) {
+                            stillPending.push(wid);
+                        }
+                    }
+                    pending = stillPending;
+                }
+                if (pending.length) {
+                    box.innerHTML = '<p class="text-xs text-yellow-300">Enrichment still running in the background — refresh this card later.</p>';
+                } else {
+                    renderEnrichResult(box, summaries);
+                }
+            } catch (e) {
+                box.innerHTML = '<p class="text-xs text-red-400">Enrichment failed: ' + esc(e.message) + '</p>';
+                btn.disabled = false;
+                btn.innerHTML = original;
+            }
+        }
+
+        function renderEnrichResult(box, summaries) {
+            const agg = { findings: 0, inserted: 0, paper: 0, errors: [] };
+            Object.values(summaries).forEach(s => {
+                const sm = s.summary || {};
+                agg.findings += sm.findings || 0;
+                agg.inserted += sm.inserted || 0;
+                agg.paper += sm.paper_qms_findings || 0;
+                (sm.errors || []).forEach(e => agg.errors.push(e));
+            });
+            let html = '';
+            if (agg.findings > 0) {
+                html = `<div class="p-2 rounded border border-green-700/50 bg-green-900/20 text-xs">
+                    <p class="text-green-300 font-semibold">✓ ${agg.findings} external finding(s)${agg.inserted ? ` · ${agg.inserted} saved` : ''}</p>
+                    ${agg.paper > 0 ? `<p class="mt-1 text-yellow-300 font-semibold">⚠ ${agg.paper} Paper-QMS flagged</p>` : ''}
+                </div>`;
+            } else if (agg.errors.length) {
+                html = `<div class="p-2 rounded border border-red-700/50 bg-red-900/20 text-xs text-red-300">
+                    Enrichment errors: ${esc(agg.errors.join('; '))}
+                </div>`;
+            } else {
+                html = `<div class="p-2 rounded border border-slate-700 bg-slate-800/50 text-xs text-slate-400">
+                    No FDA / EudraGMDP findings for this manufacturer.
+                </div>`;
+            }
+            box.innerHTML = html;
         }
 
         function formatDuration(seconds) {

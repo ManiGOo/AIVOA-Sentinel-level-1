@@ -362,3 +362,106 @@ async def trigger_enrichment(req: Optional[EnrichmentTriggerRequest] = None):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class EnrichmentCheckRequest(BaseModel):
+    event_id: str
+    source: str = "all"   # fda | eudragmdp | all
+
+
+@app.post("/api/v1/enrichment/check")
+async def check_event_enrichment(req: EnrichmentCheckRequest,
+                                 db: Session = Depends(get_db)):
+    """
+    On-demand enrichment for a single signal card. Resolves the card's
+    manufacturer, cleans it, and runs the enrichment workflow for that one
+    firm. The frontend polls /api/v1/enrichment/status/{workflow_id}.
+    """
+    if VIEW_ONLY:
+        raise HTTPException(status_code=403, detail="Enrichment execution is disabled in view-only mode.")
+    if req.source not in ("fda", "eudragmdp", "all"):
+        raise HTTPException(status_code=400, detail="source must be 'fda', 'eudragmdp' or 'all'")
+
+    event = db.query(RegulatoryEvent).filter(
+        RegulatoryEvent.event_id == req.event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Signal event not found")
+
+    mfr = (event.raw_details or {}).get("manufacturer", "")
+    if not mfr or not mfr_key(mfr):
+        raise HTTPException(status_code=400, detail="Manufacturer is a placeholder or missing")
+
+    sources = ["fda", "eudragmdp"] if req.source == "all" else [req.source]
+    try:
+        client = await Client.connect(os.environ.get("TEMPORAL_HOST", "localhost:7233"))
+        workflow_ids = []
+        for source in sources:
+            workflow_id = f"check-{source}-{req.event_id[:8]}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+            handle = await client.start_workflow(
+                "EnrichmentWorkflow",
+                args=[[mfr], source],
+                id=workflow_id,
+                task_queue="enrichment-task-queue",
+            )
+            workflow_ids.append(handle.id)
+        return {
+            "status": "SUCCESS",
+            "manufacturer": mfr,
+            "workflow_ids": workflow_ids,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/enrichment/status/{workflow_id}")
+async def enrichment_status(workflow_id: str):
+    """
+    Poll endpoint for a single-firm enrichment workflow: returns the workflow
+    state, progress, and (when finished) the batch results.
+    """
+    client = await Client.connect(os.environ.get("TEMPORAL_HOST", "localhost:7233"))
+    handle = client.get_workflow_handle(workflow_id)
+    try:
+        desc = await handle.describe()
+        state = desc.status.name
+    except Exception:
+        return {"workflow_id": workflow_id, "state": "UNKNOWN"}
+
+    progress = {}
+    if state in ("RUNNING", "COMPLETED"):
+        try:
+            progress = await handle.query("progress")
+        except Exception:
+            progress = {}
+
+    result = None
+    error = None
+    if state in ("COMPLETED", "FAILED", "TERMINATED", "CANCELED"):
+        try:
+            result = await handle.result()
+        except FailureError as e:
+            error = str(e)
+        except Exception as e:
+            error = str(e)
+
+    summary = {}
+    if result:
+        for key, batch in result.items():
+            if isinstance(batch, dict):
+                summary.update({
+                    "findings": summary.get("findings", 0) + batch.get("findings", 0),
+                    "inserted": summary.get("inserted", 0) + batch.get("inserted", 0),
+                    "paper_qms_findings": summary.get("paper_qms_findings", 0) + batch.get("paper_qms_findings", 0),
+                    "errors": summary.get("errors", []) + batch.get("errors", []),
+                    "firms": summary.get("firms", []) + batch.get("firms", []),
+                    "skipped_firms": summary.get("skipped_firms", []) + batch.get("skipped_firms", []),
+                })
+
+    return {
+        "workflow_id": workflow_id,
+        "state": state,
+        "progress": progress,
+        "summary": summary,
+        "result": result,
+        "error": error,
+    }

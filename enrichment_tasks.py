@@ -8,7 +8,7 @@ with workflow.unsafe.imports_passed_through():
     from db_setup import SessionLocal, RegulatoryEvidence
     from adapters import REGULATORY_SOURCES
     from cognitive_engine import analyze_regulatory_finding
-    from company_names import clean_company_name, looks_like_company, clean_company_names_batch
+    from company_names import clean_company_name, looks_like_company, clean_company_names_batch, strip_legal_suffix
     from temporal_tasks import mfr_key
 
 PAPER_QMS_WEIGHT = 40
@@ -95,7 +95,15 @@ async def fetch_external_evidence(firm_names: list[str], source: str = "fda",
                     continue
                 seen.add(search_name.lower())
                 try:
-                    found = await adapter.search(browser, search_name)
+                    queries = [search_name]
+                    stripped = strip_legal_suffix(search_name)
+                    if stripped and stripped.lower() != search_name.lower():
+                        queries.append(stripped)
+                    found = []
+                    for query in queries:
+                        found = await adapter.search(browser, query)
+                        if found:
+                            break
                     for f in found:
                         f.mfr_key = mfr_key(raw)
                         if classify:
