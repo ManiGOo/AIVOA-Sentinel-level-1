@@ -97,8 +97,13 @@ Sources:
     (free-account login + search).
   - Run as a **background Temporal activity** (browser startup is heavy), not in
     the API request path.
-  - Image: base `mcr.microsoft.com/playwright` (or `playwright install
-    chromium`) in the worker Docker image; polite throttling + retries.
+  - Image: **`mcr.microsoft.com/playwright/python:v1.62.0-noble`** (worker only,
+    via `Dockerfile.worker`; app stays on `python:3.12-slim`) — Chromium +
+    system libs preinstalled. Done and verified (Chromium launches inside the
+    worker container). Polite throttling + retries.
+  - Note: swapping the worker while a Temporal scrape is mid-flight is safe —
+    the workflow lives in the Temporal server; the interrupted activity
+    retries after its `start_to_close_timeout` (5 min) on the new worker.
 - **Adapter pattern**: `REGULATORY_SOURCES` registry → `fda.py`, `eudragmdp.py`.
 - **Fingerprint rules engine**: keyword/regex scoring on finding text.
 - **LLM classifier**: reuse Groq + structured output (like
