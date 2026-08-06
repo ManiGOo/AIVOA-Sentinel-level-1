@@ -8,6 +8,8 @@ with workflow.unsafe.imports_passed_through():
     from db_setup import SessionLocal, RegulatoryEvidence
     from adapters import REGULATORY_SOURCES
     from cognitive_engine import analyze_regulatory_finding
+    from company_names import clean_company_name, looks_like_company, clean_company_names_batch
+    from temporal_tasks import mfr_key
 
 PAPER_QMS_WEIGHT = 40
 
@@ -29,7 +31,7 @@ def _save_findings(findings) -> tuple[int, int]:
             db.add(RegulatoryEvidence(
                 source=f.source,
                 firm_name=f.firm_name,
-                mfr_key=(f.firm_name or "").strip().lower(),
+                mfr_key=f.mfr_key or (f.firm_name or "").strip().lower(),
                 finding_date=datetime.fromisoformat(f.finding_date).date()
                 if isinstance(f.finding_date, str) and f.finding_date else None,
                 url=f.url,
@@ -64,23 +66,48 @@ async def fetch_external_evidence(firm_names: list[str], source: str = "fda",
 
     findings = []
     errors = []
+    skipped_firms = []
+
+    plans = []      # (search_name, raw)
+    needs_llm = []
+    for raw in firm_names:
+        search_name = clean_company_name(raw)
+        if search_name and looks_like_company(search_name):
+            plans.append((search_name, raw))
+        else:
+            needs_llm.append(raw)
+    if needs_llm:
+        try:
+            llm_out = await asyncio.to_thread(clean_company_names_batch, needs_llm)
+            for raw, name in zip(needs_llm, llm_out):
+                if name and looks_like_company(name, llm_trusted=True):
+                    plans.append((name, raw))
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"llm_clean: {type(e).__name__}: {e}")
+    skipped_firms = [raw for raw in firm_names if not any(raw == r for _, r in plans)]
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            for firm in firm_names:
+            seen = set()
+            for search_name, raw in plans:
+                if search_name.lower() in seen:
+                    continue
+                seen.add(search_name.lower())
                 try:
-                    found = await adapter.search(browser, firm)
+                    found = await adapter.search(browser, search_name)
                     for f in found:
+                        f.mfr_key = mfr_key(raw)
                         if classify:
                             verdict = await asyncio.to_thread(
-                                analyze_regulatory_finding, f.evidence_text, firm)
+                                analyze_regulatory_finding, f.evidence_text, search_name)
                             f.classification = verdict
                             f.evidence_quote = verdict.get("evidence_quote", "")
                             f.paper_qms_score = PAPER_QMS_WEIGHT \
                                 if verdict.get("is_paper_qms") else 0
                     findings.extend(found)
                 except Exception as e:  # noqa: BLE001
-                    errors.append(f"{firm}: {type(e).__name__}: {e}")
+                    errors.append(f"{search_name}: {type(e).__name__}: {e}")
         finally:
             await browser.close()
 
@@ -92,6 +119,7 @@ async def fetch_external_evidence(firm_names: list[str], source: str = "fda",
         "inserted": inserted,
         "skipped": skipped,
         "paper_qms_findings": sum(1 for f in findings if f.paper_qms_score),
+        "skipped_firms": skipped_firms,
         "errors": errors,
     }
 

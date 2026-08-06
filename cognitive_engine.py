@@ -173,3 +173,53 @@ def analyze_regulatory_finding(evidence_text: str, firm_name: str) -> dict:
         print(f"Groq API Error (finding): {e}")
     return {"is_paper_qms": False, "evidence_quote": "", "confidence": 0.0,
             "reason": "LLM error"}
+
+def extract_company_names_batch(raw_names: List[str]) -> List[str]:
+    """Clean CDSCO manufacturer strings into trading names, preserving order.
+
+    Returns one clean name per input ('' when unparseable). Intended as a
+    fallback when the heuristic in company_names.py fails.
+    """
+    if not GROQ_API_KEY.startswith("gsk_"):
+        return [""] * len(raw_names)
+
+    prompt = f"""
+    You extract clean pharmaceutical company trading names from messy CDSCO
+    manufacturer strings that mix the company name with a full site address.
+
+    For each input, return ONLY the company trading/legal name — drop address,
+    pincode, "M/s.", "Plot No", village, district, state, and unit/site details.
+    Examples:
+    - "M/s.Argon Remedies Pvt. Ltd., Sarverkhera. Moradabad Road, Kashipur..." -> "Argon Remedies Pvt. Ltd."
+    - "Gidsha Pharmaceuticals Plot No. 611 612, Mega GIDC, Kharedi, Dahod..." -> "Gidsha Pharmaceuticals"
+    - "Zee Laboratories 47, Industrial Area, Paonta Sahib-173025" -> "Zee Laboratories"
+    If the string has no company name (it is only an address), use "".
+
+    Inputs:
+    {json.dumps(raw_names, indent=2)}
+
+    Respond ONLY with a valid JSON object:
+    {{"names": ["clean name or empty string for each input, in order"]}}
+    """
+
+    try:
+        completion = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[
+                {"role": "system", "content": "You output strict JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.0,
+            max_tokens=2048,
+        )
+        data = json.loads(completion.choices[0].message.content)
+        names = data.get("names", [])
+        if len(names) != len(raw_names):
+            raise ValueError("length mismatch")
+        return [str(n).strip() for n in names]
+    except (json.JSONDecodeError, ValidationError, ValueError) as e:
+        print(f"Groq Extraction Error (company names): {e}")
+    except Exception as e:
+        print(f"Groq API Error (company names): {e}")
+    return [""] * len(raw_names)
