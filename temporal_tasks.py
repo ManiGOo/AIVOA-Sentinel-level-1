@@ -1,4 +1,5 @@
 from temporalio import activity, workflow
+from temporalio.common import RetryPolicy
 from datetime import timedelta, datetime, date
 import asyncio
 import time
@@ -7,8 +8,12 @@ with workflow.unsafe.imports_passed_through():
     import requests
     from bs4 import BeautifulSoup
     from sqlalchemy import func
-    from db_setup import SessionLocal, RegulatoryEvent
-    from cognitive_engine import analyze_cdsco_failure_batch
+    from db_setup import SessionLocal, RegulatoryEvent, RegulatoryEvidence, EnrichmentCheck
+    from cognitive_engine import analyze_cdsco_failure_batch, classify_failure_modes_batch
+    from paper_category import assess_paper_category
+    from company_names import clean_company_name
+
+BACKFILL_BATCH = 20
 
 CDSCO_BASE = "https://cdscoonline.gov.in/CDSCO"
 
@@ -426,3 +431,172 @@ class CDSCOScraperWorkflow:
         self._event_type = ""
         self._finished = True
         return results
+
+
+@activity.defn
+def load_backfill_candidates() -> dict:
+    """Read all events and return the deduped (manufacturer, drug_name, reason)
+    input list the failure-mode LLM pass must classify. Short-lived SELECTs only
+    (no long-held transaction), so the remote Postgres never drops the conn.
+    Plain def: blocking DB work must run in the worker's thread pool, not on
+    the event loop (async def + blocking calls would freeze queries/tasks)."""
+    db = SessionLocal()
+    try:
+        events = db.query(RegulatoryEvent).all()
+        unique = {}
+        order = []
+        for ev in events:
+            rd = ev.raw_details or {}
+            key = (rd.get("manufacturer", ""), rd.get("drug_name", ""), rd.get("reason", ""))
+            if key not in unique:
+                unique[key] = {"manufacturer": key[0], "drug_name": key[1], "reason": key[2]}
+                order.append(key)
+        return {"events_total": len(events),
+                "unique": [unique[k] for k in order]}
+    finally:
+        db.close()
+
+
+@activity.defn
+async def classify_failure_modes_activity(chunk: list) -> dict:
+    """One LLM batch (<=20 items). Runs in a thread so the blocking Groq call
+    cannot freeze the worker event loop."""
+    labels = await asyncio.to_thread(classify_failure_modes_batch, chunk)
+    return {"labels": [labels.get(i, "") for i in range(len(chunk))]}
+
+
+@activity.defn
+def apply_failure_modes(data: dict) -> dict:
+    """Merge the classified failure modes into every event, recompute the
+    class-aware paper assessment and full lead score, commit every 500.
+    Plain def: blocking DB work must run in the worker's thread pool, not on
+    the event loop (async def + blocking calls would freeze queries/tasks)."""
+    from collections import Counter
+    unique_list = data["unique"]
+    labels_list = data["labels"]  # aligned with unique_list
+    label_by_key = {
+        (u["manufacturer"], u["drug_name"], u["reason"]): labels_list[i]
+        for i, u in enumerate(unique_list)
+    }
+    ck = lambda raw: clean_company_name(raw or "").strip().lower()
+    db = SessionLocal()
+    try:
+        ev_by_key, ch_by_key = {}, {}
+        for e in db.query(RegulatoryEvidence).all():
+            ev_by_key.setdefault(e.company_key or "", []).append(e)
+        for c in db.query(EnrichmentCheck).all():
+            ch_by_key.setdefault(c.company_key or "", []).append(c)
+
+        events = db.query(RegulatoryEvent).all()
+        mfr_counts = {}
+        for ev in events:
+            k = mfr_key((ev.raw_details or {}).get("manufacturer", ""))
+            if k:
+                mfr_counts[k] = mfr_counts.get(k, 0) + 1
+
+        updated = 0
+        dist = Counter()
+        class_dist = Counter()
+        commits = []
+        for ev in events:
+            rd = ev.raw_details or {}
+            key = (rd.get("manufacturer", ""), rd.get("drug_name", ""), rd.get("reason", ""))
+            fm = label_by_key.get(key, "")
+            analysis = dict(ev.llm_analysis or {})
+            if fm:
+                analysis["failure_mode"] = fm
+            ev.llm_analysis = analysis
+
+            k = ck(rd.get("manufacturer", ""))
+            pa = assess_paper_category(
+                k, rd.get("reason", ""),
+                ev.reported_by or rd.get("reported_by", ""),
+                ev_by_key.get(k, []), ch_by_key.get(k, []), fm)
+            paper = 30 if pa["class"] == "explicit" \
+                else (round(20 * pa["confidence"] / 100) if pa["class"] == "deductive" else 0)
+            base = 40 if ev.event_type == "SPURIOUS_DRUG" else 20
+            flags = [f for f in ("violates_rule_96", "violates_sub_rule_7", "violates_schedule_h2")
+                     if analysis.get(f)]
+            mandate = 20 if (flags and ev.event_date and ev.event_date >= MANDATE_START) else 0
+            prior = max(mfr_counts.get(mfr_key(rd.get("manufacturer", "")), 1) - 1, 0)
+            ev.score = round((base + paper + mandate) * recency_weight(ev.event_date)) \
+                + repeat_offender_bonus(prior)
+            ev.paper_evidence_class = pa["class"]
+            ev.paper_confidence = pa["confidence"]
+            ev.paper_proxies = pa["proxies"]
+            dist[fm or "unknown"] += 1
+            class_dist[pa["class"]] += 1
+            updated += 1
+            if updated % 500 == 0:
+                db.commit()
+                commits.append(dict(dist))
+        db.commit()
+        return {"updated": updated,
+                "failure_mode_distribution": dict(dist),
+                "paper_class_distribution": dict(class_dist),
+                "commits": commits}
+    finally:
+        db.close()
+
+
+@workflow.defn
+class FailureModeBackfillWorkflow:
+    def __init__(self):
+        self._phase = "idle"
+        self._events_total = 0
+        self._unique_total = 0
+        self._chunks_total = 0
+        self._chunks_done = 0
+        self._updated = 0
+        self._finished = False
+        self._final = None
+
+    @workflow.query
+    def get_progress(self) -> dict:
+        return {
+            "phase": self._phase,
+            "events_total": self._events_total,
+            "unique_total": self._unique_total,
+            "chunks_total": self._chunks_total,
+            "chunks_done": self._chunks_done,
+            "updated": self._updated,
+            "finished": self._finished,
+            "final": self._final,
+        }
+
+    @workflow.run
+    async def run(self) -> dict:
+        self._phase = "loading"
+        loaded = await workflow.execute_activity(
+            load_backfill_candidates,
+            start_to_close_timeout=timedelta(minutes=10),
+        )
+        unique_list = loaded["unique"]
+        self._events_total = loaded["events_total"]
+        self._unique_total = len(unique_list)
+        self._phase = "classifying"
+        self._chunks_total = (len(unique_list) + BACKFILL_BATCH - 1) // BACKFILL_BATCH
+        labels_list = [""] * len(unique_list)
+        for start in range(0, len(unique_list), BACKFILL_BATCH):
+            chunk = unique_list[start:start + BACKFILL_BATCH]
+            res = await workflow.execute_activity(
+                classify_failure_modes_activity,
+                args=[chunk],
+                start_to_close_timeout=timedelta(minutes=3),
+                retry_policy=RetryPolicy(maximum_attempts=3),
+            )
+            for j, label in enumerate(res["labels"]):
+                labels_list[start + j] = label
+            self._chunks_done += 1
+        self._phase = "applying"
+        result = await workflow.execute_activity(
+            apply_failure_modes,
+            {"unique": unique_list, "labels": labels_list},
+            start_to_close_timeout=timedelta(minutes=15),
+            retry_policy=RetryPolicy(maximum_attempts=2),
+        )
+        self._updated = result["updated"]
+        self._final = result
+        self._finished = True
+        self._phase = "done"
+        return result

@@ -15,11 +15,12 @@ PAPER_QMS_WEIGHT = 40
 
 
 def _save_findings(findings, checks) -> tuple[int, int]:
-    """Persist evidence rows + one enrichment_checks row per firm (recorded
-    even when a firm yields no findings)."""
+    """Persist evidence rows + one enrichment_checks row per company+source
+    (upserted so repeated checks don't pile up rows; recorded even when a firm
+    yields no findings)."""
     inserted = 0
     skipped = 0
-    inserted_by_mfr = {}
+    inserted_by_key = {}
     db = SessionLocal()
     try:
         for f in findings:
@@ -35,6 +36,7 @@ def _save_findings(findings, checks) -> tuple[int, int]:
                 source=f.source,
                 firm_name=f.firm_name,
                 mfr_key=f.mfr_key or (f.firm_name or "").strip().lower(),
+                company_key=f.company_key,
                 finding_date=datetime.fromisoformat(f.finding_date).date()
                 if isinstance(f.finding_date, str) and f.finding_date else None,
                 url=f.url,
@@ -45,11 +47,26 @@ def _save_findings(findings, checks) -> tuple[int, int]:
                 fetched_at=datetime.utcnow(),
             ))
             inserted += 1
-            inserted_by_mfr[f.mfr_key] = inserted_by_mfr.get(f.mfr_key, 0) + 1
+            inserted_by_key[f.company_key] = inserted_by_key.get(f.company_key, 0) + 1
         for c in checks:
-            if inserted_by_mfr.get(c["mfr_key"]):
-                c = {**c, "inserted_count": inserted_by_mfr[c["mfr_key"]]}
-            db.add(EnrichmentCheck(**c))
+            key = c["company_key"] or c["mfr_key"]
+            existing = db.query(EnrichmentCheck).filter(
+                EnrichmentCheck.company_key == key,
+                EnrichmentCheck.source == c["source"],
+            ).first()
+            if existing:
+                existing.findings_count = c["findings_count"]
+                existing.inserted_count = inserted_by_key.get(key, c["inserted_count"])
+                existing.paper_qms_count = c["paper_qms_count"]
+                existing.status = c["status"]
+                existing.error = c["error"]
+                existing.searched_name = c["searched_name"] or existing.searched_name
+                existing.mfr_key = c["mfr_key"] or existing.mfr_key
+                existing.checked_at = datetime.utcnow()
+            else:
+                c = {**c, "inserted_count": inserted_by_key.get(key, c["inserted_count"]),
+                     "company_key": key}
+                db.add(EnrichmentCheck(**c))
         db.commit()
     finally:
         db.close()
@@ -101,7 +118,7 @@ async def fetch_external_evidence(firm_names: list[str], source: str = "fda",
         key = mfr_key(raw)
         raw_by_key[key] = raw
         firm_stats[key] = {"searched": search_name, "findings": 0, "paper": 0,
-                           "error": ""}
+                           "error": "", "company_key": clean_company_name(raw).strip().lower() or key}
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -124,6 +141,7 @@ async def fetch_external_evidence(firm_names: list[str], source: str = "fda",
                             break
                     for f in found:
                         f.mfr_key = key
+                        f.company_key = firm_stats[key]["company_key"]
                         if classify:
                             verdict = await asyncio.to_thread(
                                 analyze_regulatory_finding, f.evidence_text, search_name)
@@ -144,6 +162,7 @@ async def fetch_external_evidence(firm_names: list[str], source: str = "fda",
     for key, stats in firm_stats.items():
         checks.append({
             "mfr_key": key,
+            "company_key": stats["company_key"],
             "source": source,
             "searched_name": stats["searched"],
             "findings_count": stats["findings"],
@@ -155,6 +174,7 @@ async def fetch_external_evidence(firm_names: list[str], source: str = "fda",
     for raw in skipped_firms:
         checks.append({
             "mfr_key": mfr_key(raw),
+            "company_key": clean_company_name(raw).strip().lower() or mfr_key(raw),
             "source": source,
             "searched_name": "",
             "findings_count": 0,

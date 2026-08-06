@@ -43,6 +43,10 @@ class RegulatoryEvent(Base):
     
     event_date = Column(Date, default=datetime.utcnow)
 
+    paper_evidence_class = Column(String(20), default='')  # '' | explicit | deductive | none
+    paper_confidence = Column(Integer, default=0)          # 0-100
+    paper_proxies = Column(JSONB, default=list)            # satisfied proxy labels
+
 class RegulatoryEvidence(Base):
     """External regulatory evidence (FDA warning letters, EudraGMDP
     non-compliance statements) used as Layer-1 paper-QMS detection."""
@@ -52,6 +56,7 @@ class RegulatoryEvidence(Base):
     source = Column(String(50))          # 'FDA' | 'EudraGMDP'
     firm_name = Column(Text)             # as shown by the source
     mfr_key = Column(Text, index=True)   # normalized key (matches regulatory_events)
+    company_key = Column(Text, index=True)  # cleaned company name key (entity-level)
     finding_date = Column(Date, nullable=True)
     url = Column(Text)
     evidence_text = Column(Text)
@@ -67,6 +72,7 @@ class EnrichmentCheck(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     mfr_key = Column(Text, index=True)       # normalized key (matches regulatory_events)
+    company_key = Column(Text, index=True)   # cleaned company name key (entity-level)
     source = Column(String(50))              # 'FDA' | 'EudraGMDP'
     searched_name = Column(Text, default='') # cleaned name actually queried
     findings_count = Column(Integer, default=0)
@@ -93,8 +99,24 @@ def init_db():
         "ADD COLUMN IF NOT EXISTS reported_by VARCHAR(100) DEFAULT ''",
         "ALTER TABLE sdr_data.regulatory_events ALTER COLUMN reporting_source TYPE TEXT",
         "ALTER TABLE sdr_data.regulatory_events ALTER COLUMN reported_by TYPE TEXT",
+        "ALTER TABLE sdr_data.regulatory_events "
+        "ADD COLUMN IF NOT EXISTS paper_evidence_class VARCHAR(20) DEFAULT ''",
+        "ALTER TABLE sdr_data.regulatory_events "
+        "ADD COLUMN IF NOT EXISTS paper_confidence INT DEFAULT 0",
+        "ALTER TABLE sdr_data.regulatory_events "
+        "ADD COLUMN IF NOT EXISTS paper_proxies JSONB DEFAULT '[]'",
+        "CREATE INDEX IF NOT EXISTS ix_events_paper_class "
+        "ON sdr_data.regulatory_events (paper_evidence_class)",
         "ALTER TABLE sdr_data.regulatory_evidence "
         "ADD COLUMN IF NOT EXISTS mfr_key TEXT",
+        "ALTER TABLE sdr_data.regulatory_evidence "
+        "ADD COLUMN IF NOT EXISTS company_key TEXT",
+        "ALTER TABLE sdr_data.enrichment_checks "
+        "ADD COLUMN IF NOT EXISTS company_key TEXT",
+        "CREATE INDEX IF NOT EXISTS ix_evidence_company_key "
+        "ON sdr_data.regulatory_evidence (company_key)",
+        "CREATE INDEX IF NOT EXISTS ix_checks_company_key "
+        "ON sdr_data.enrichment_checks (company_key)",
     ]
     for sql in migrations:
         with engine.connect() as conn:

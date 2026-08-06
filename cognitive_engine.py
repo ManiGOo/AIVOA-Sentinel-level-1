@@ -22,6 +22,7 @@ class ComplianceAuditResult(BaseModel):
     violates_sub_rule_7: bool
     violates_schedule_h2: bool
     root_cause_summary: str
+    failure_mode: str = ""  # 'manual_process' | 'formulation' | 'unclear'
 
 class BatchComplianceAuditResult(BaseModel):
     results: List[ComplianceAuditResult]
@@ -43,6 +44,22 @@ def analyze_cdsco_failure_batch(batch_items: List[dict]) -> dict:
     - is_paper_failure: TRUE only if the text explicitly indicates a paper-based
       QMS issue (e.g. missing signatures, manual batch records, uncontrolled
       spreadsheets/logbooks, ALCOA+ data integrity, transcription errors).
+    - failure_mode: classify the NATURE of the quality failure for Category-2
+      (deductive) assessment. CDSCO NSQ alerts publish only chemical test
+      outcomes, never IT audits, so we infer manual process gaps from failure
+      type:
+        "manual_process"  -> failure typical of manual weighing/dispensing and
+          missing in-process interlocks: dissolution, assay, content
+          uniformity, weight variation / uniformity of weight, disintegration,
+          hardness, friability, dose uniformity, label claim.
+        "formulation"     -> API/formulation-quality issue NOT tied to manual
+          operations: related substances, impurities, degradation products,
+          microbial/bacterial contamination, sterility, endotoxin, pyrogen,
+          preservative, moisture, particulate.
+        "unclear"         -> generic or insufficient text ("Content", "The
+          sample does not conform to the IP", "Description", etc.).
+      Choose the single best label from the reason text; if none applies,
+      use "unclear".
     - violates_rule_96: Rule 96 = QR code/serialization on APIs. TRUE only if the
       text mentions QR code, barcode, 2D data matrix, serialization, or
       track-and-trace on an Active Pharmaceutical Ingredient.
@@ -75,7 +92,8 @@ def analyze_cdsco_failure_batch(batch_items: List[dict]) -> dict:
           "violates_rule_96": boolean,
           "violates_sub_rule_7": boolean,
           "violates_schedule_h2": boolean,
-          "root_cause_summary": "string"
+          "root_cause_summary": "string",
+          "failure_mode": "manual_process|formulation|unclear"
         }}
       ]
     }}
@@ -131,13 +149,20 @@ def analyze_regulatory_finding(evidence_text: str, firm_name: str) -> dict:
     Task: decide whether the finding indicates the firm relies on PAPER-BASED
     quality management (paper QMS).
 
+    Evidence taxonomy:
+    - CATEGORY 1 (explicit evidence): the regulator DIRECTLY cites paper / manual
+      data handling. This is the only basis for is_paper_qms = TRUE. Examples:
+      manual/inaccurate batch production records, missing or forged signatures,
+      uncontrolled spreadsheets/logbooks/paper records, ALCOA/ALCOA+ data
+      integrity violations (backdating, falsification), transcription errors,
+      failure to record, record discrepancies.
+    - CATEGORY 2 (deductive, NOT set here): CDSCO NSQ alerts publish only
+      chemical test failures, never IT audits — "paper-based" there is an
+      analytical inference from proxies, NOT a direct quote. Do NOT treat a
+      failed dissolution/assay/potency test as explicit paper evidence.
+
     is_paper_qms = TRUE only if the text explicitly cites a documentation /
-    data-integrity failure, e.g.:
-    - manual/inaccurate batch production records
-    - missing or forged signatures on records
-    - uncontrolled spreadsheets, logbooks, or paper records
-    - ALCOA/ALCOA+ or data integrity violations (backdating, falsification)
-    - transcription errors, failure to record, record discrepancies
+    data-integrity failure as described under Category 1.
 
     Quality failures such as failed potency, dissolution, contamination,
     mislabeling, or failed CGMP practices WITHOUT an explicit documentation
@@ -173,6 +198,54 @@ def analyze_regulatory_finding(evidence_text: str, firm_name: str) -> dict:
         print(f"Groq API Error (finding): {e}")
     return {"is_paper_qms": False, "evidence_quote": "", "confidence": 0.0,
             "reason": "LLM error"}
+
+def classify_failure_modes_batch(items: List[dict], batch_size: int = 20,
+                                 on_chunk=None) -> dict:
+    """Classify the failure mode of CDSCO NSQ items into
+    'manual_process' | 'formulation' | 'unclear'. Lightweight, failure-mode-only
+    (no root-cause/report generation) so backfills run fast. Returns
+    {index: label} for the input list."""
+    if not GROQ_API_KEY.startswith("gsk_"):
+        return {i: "" for i in range(len(items))}
+
+    labels = {}
+    total_chunks = (len(items) + batch_size - 1) // batch_size
+    for start in range(0, len(items), batch_size):
+        chunk = items[start:start + batch_size]
+        # NOTE: keep this prompt concise. A long definitional preamble makes
+        # gpt-oss-120b fail Groq's strict JSON validation at batch 20.
+        prompt = f"""Classify each CDSCO NSQ failure notice below.
+manual_process = dissolution, assay, content uniformity, weight variation or uniformity of weight, disintegration, hardness, friability, dose uniformity, label claim.
+formulation = related substances, impurities, microbial or bacterial contamination, sterility, endotoxin, pyrogen, moisture, particulate, degradation products.
+unclear = generic or insufficient text (e.g. "Content", "The sample does not conform to the IP", "Description").
+Base the label only on the reason text. Prefer manual_process when both apply. Keep labels in the exact same order as the input.
+Inputs:
+{json.dumps([{"drug_name": (i.get("drug_name","") or "")[:120], "reason": (i.get("reason","") or "")[:300]} for i in chunk])}
+Respond ONLY with a valid JSON object with a single key: {{"labels": ["manual_process|formulation|unclear", ...]}}"""
+        try:
+            completion = client.chat.completions.create(
+                model="openai/gpt-oss-120b",
+                messages=[
+                    {"role": "system", "content": "You output strict JSON."},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.0,
+                max_tokens=2048,
+            )
+            data = json.loads(completion.choices[0].message.content)
+            out = data.get("labels", [])
+            if len(out) != len(chunk):
+                out = out + [""] * (len(chunk) - len(out))
+        except Exception as e:  # noqa: BLE001
+            print(f"Groq failure-mode error: {e}", flush=True)
+            out = [""] * len(chunk)
+        for j, label in enumerate(out):
+            labels[start + j] = label
+        if on_chunk is not None:
+            on_chunk((start // batch_size) + 1, total_chunks)
+    return labels
+
 
 def extract_company_names_batch(raw_names: List[str]) -> List[str]:
     """Clean CDSCO manufacturer strings into trading names, preserving order.

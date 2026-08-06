@@ -11,6 +11,16 @@ import os
 
 from db_setup import SessionLocal, RegulatoryEvent, RegulatoryEvidence, EnrichmentCheck
 from temporal_tasks import MANDATE_START, recency_weight, repeat_offender_bonus, mfr_key
+from company_names import clean_company_name
+from paper_category import assess_paper_category
+
+
+def company_key(raw: str) -> str:
+    """Entity-level key: cleaned company name (all raw variants of a company
+    map to the same key). Empty when no company name can be extracted."""
+    if not raw:
+        return ""
+    return clean_company_name(raw).strip().lower()
 
 app = FastAPI(title="AIVOA Project Sentinel - Signal API", version="1.0.0")
 
@@ -55,6 +65,7 @@ class RegulatorySignalResponse(BaseModel):
     reported_by: str = ""
     score_breakdown: dict = {}
     enrichment: dict = {}
+    paper_assessment: dict = {}
     
     class Config:
         from_attributes = True
@@ -76,6 +87,7 @@ def get_high_priority_signals(
     q: str = None,
     event_type: str = None,
     is_paper: bool = None,
+    paper_class: str = None,
     rule_96: bool = False,
     sub_rule_7: bool = False,
     schedule_h2: bool = False,
@@ -99,6 +111,8 @@ def get_high_priority_signals(
         query = query.filter(RegulatoryEvent.event_type == event_type)
     if is_paper is not None:
         query = query.filter(RegulatoryEvent.llm_analysis['is_paper_failure'].astext == str(is_paper).lower())
+    if paper_class in ("explicit", "deductive", "none"):
+        query = query.filter(RegulatoryEvent.paper_evidence_class == paper_class)
     if rule_96:
         query = query.filter(RegulatoryEvent.llm_analysis['violates_rule_96'].astext == 'true')
     if sub_rule_7:
@@ -136,36 +150,38 @@ def get_high_priority_signals(
         if key:
             counts[key] = counts.get(key, 0) + cnt
 
-    # Enrichment state for the page's manufacturers: latest check per source
-    # (including 'checked, no findings') + stored evidence rows.
+    # Enrichment state for the page's companies (entity-level): latest check per
+    # source (including 'checked, no findings') + stored evidence rows. All raw
+    # manufacturer variants of one company share the same company_key.
     page_keys = set()
     for event in events:
         mfr = (event.raw_details or {}).get('manufacturer', '')
-        key = mfr_key(mfr)
-        if key:
-            page_keys.add(key)
+        ckey = company_key(mfr)
+        if ckey:
+            page_keys.add(ckey)
 
     checks_by_key = {}
     evidence_by_key = {}
     if page_keys:
         for c in db.query(EnrichmentCheck).filter(
-                EnrichmentCheck.mfr_key.in_(page_keys))\
+                EnrichmentCheck.company_key.in_(page_keys))\
                 .order_by(EnrichmentCheck.checked_at.desc()).all():
-            checks_by_key.setdefault(c.mfr_key, []).append(c)
+            checks_by_key.setdefault(c.company_key or "", []).append(c)
         for e in db.query(RegulatoryEvidence).filter(
-                RegulatoryEvidence.mfr_key.in_(page_keys))\
+                RegulatoryEvidence.company_key.in_(page_keys))\
                 .order_by(RegulatoryEvidence.fetched_at.desc()).all():
-            evidence_by_key.setdefault(e.mfr_key, []).append(e)
+            evidence_by_key.setdefault(e.company_key or "", []).append(e)
 
     response = []
     for event in events:
         analysis = event.llm_analysis or {}
         mfr = (event.raw_details or {}).get('manufacturer', '')
         key = mfr_key(mfr)
+        ckey = company_key(mfr)
 
         # latest check per source (list is ordered checked_at desc)
         latest_checks = {}
-        for c in checks_by_key.get(key, []):
+        for c in checks_by_key.get(ckey, []):
             if c.source not in latest_checks:
                 latest_checks[c.source] = {
                     "status": c.status,
@@ -177,25 +193,43 @@ def get_high_priority_signals(
 
         prior = max(counts.get(key, 0) - 1, 0)
         base = 40 if event.event_type == 'SPURIOUS_DRUG' else 20
-        paper_bonus = 30 if analysis.get('is_paper_failure') else 0
+        pa = assess_paper_category(
+            ckey,
+            (event.raw_details or {}).get("reason", ""),
+            event.reported_by or (event.raw_details or {}).get("reported_by", ""),
+            evidence_by_key.get(ckey, []),
+            checks_by_key.get(ckey, []),
+            (analysis or {}).get("failure_mode", ""),
+        )
+        # Class-aware paper bonus: explicit regulator quote = full weight;
+        # deductive (Category 2) scales with proxy confidence; none = 0.
+        if pa["class"] == "explicit":
+            paper_bonus = 30
+        elif pa["class"] == "deductive":
+            paper_bonus = round(20 * pa["confidence"] / 100)
+        else:
+            paper_bonus = 0
         mandate_flags = [k for k in ('violates_rule_96', 'violates_sub_rule_7', 'violates_schedule_h2') if analysis.get(k)]
         mandate_bonus = 20 if (mandate_flags and event.event_date and event.event_date >= MANDATE_START) else 0
         recency = recency_weight(event.event_date)
         repeat_bonus = repeat_offender_bonus(prior)
+        new_score = round((base + paper_bonus + mandate_bonus) * recency) + repeat_bonus
 
         response.append({
             "event_id": str(event.event_id),
             "regulator": event.regulator,
             "event_type": event.event_type,
-            "score": event.score,
+            "score": new_score,
             "llm_analysis": analysis,
             "raw_details": event.raw_details or {},
             "event_date": str(event.event_date) if event.event_date else "",
             "reporting_source": event.reporting_source or (event.raw_details or {}).get("reporting_source", ""),
             "reported_by": event.reported_by or (event.raw_details or {}).get("reported_by", ""),
+            "paper_assessment": pa,
             "score_breakdown": {
                 "base": base,
                 "paper_bonus": paper_bonus,
+                "paper_bonus_class": pa["class"],
                 "mandate_bonus": mandate_bonus,
                 "mandate_flags": mandate_flags,
                 "recency_weight": recency,
@@ -212,11 +246,18 @@ def get_high_priority_signals(
                         "url": e.url or "",
                         "paper_qms_score": e.paper_qms_score or 0,
                         "evidence_quote": e.evidence_quote or "",
+                        "is_explicit": bool((e.paper_qms_score or 0) > 0),
                     }
-                    for e in evidence_by_key.get(key, [])
+                    for e in evidence_by_key.get(ckey, [])
                 ],
             },
         })
+        # Cache the assessment snapshot + full lead score for reporting/filtering.
+        event.paper_evidence_class = pa["class"]
+        event.paper_confidence = pa["confidence"]
+        event.paper_proxies = pa["proxies"]
+        event.score = new_score
+    db.commit()
     return {
         "items": response,
         "total": total,

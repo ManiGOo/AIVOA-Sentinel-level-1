@@ -12,7 +12,8 @@ class Finding:
     evidence_quote: str = ""
     classification: dict = field(default_factory=dict)
     paper_qms_score: int = 0
-    mfr_key: str = ""   # normalized raw manufacturer (links to regulatory_events)
+    mfr_key: str = ""          # normalized raw manufacturer (links to regulatory_events)
+    company_key: str = ""      # cleaned company name key (entity-level group)
 
 
 class EnrichmentAdapter(ABC):
