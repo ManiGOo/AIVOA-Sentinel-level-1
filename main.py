@@ -59,6 +59,7 @@ class RegulatorySignalResponse(BaseModel):
     regulator: str
     event_type: str
     score: int
+    company_name: str = ""
     llm_analysis: dict
     raw_details: dict
     event_date: str
@@ -187,6 +188,7 @@ def _build_signal_card(event, counts, checks_by_key, evidence_by_key) -> dict:
         "regulator": event.regulator,
         "event_type": event.event_type,
         "score": new_score,
+        "company_name": clean_company_name((event.raw_details or {}).get('manufacturer', '')),
         "llm_analysis": analysis,
         "raw_details": event.raw_details or {},
         "event_date": str(event.event_date) if event.event_date else "",

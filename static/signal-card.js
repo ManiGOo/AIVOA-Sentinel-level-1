@@ -35,11 +35,11 @@
         if (a?.violates_sub_rule_7) tags.push({ label: 'Sub-Rule 7', cls: 'bg-orange-900/50 text-orange-300 border-orange-700/50' });
         if (a?.violates_schedule_h2) tags.push({ label: 'Schedule H2', cls: 'bg-purple-900/50 text-purple-300 border-purple-700/50' });
         const SMG = {
-            process_control: 'Schedule M · Process Control',
-            contamination_control: 'Schedule M · Contamination Control',
-            stability: 'Schedule M · Stability',
-            labeling_packaging: 'Schedule M · Labeling/Packaging',
-            data_integrity: 'Schedule M · Data Integrity',
+            process_control: 'Schedule M gap · Process Control',
+            contamination_control: 'Schedule M gap · Contamination Control',
+            stability: 'Schedule M gap · Stability',
+            labeling_packaging: 'Schedule M gap · Labeling/Packaging',
+            data_integrity: 'Schedule M gap · Data Integrity',
         };
         if (a?.schedule_m_gap && SMG[a.schedule_m_gap]) tags.push({ label: SMG[a.schedule_m_gap], cls: 'bg-teal-900/50 text-teal-300 border-teal-700/50' });
         return tags;
@@ -187,7 +187,8 @@
             const drugName = raw.drug_name || 'Unknown Drug';
             const reason = clean(raw.reason || 'No reason provided');
             const rootCause = signal.llm_analysis?.root_cause_summary || 'Analysis pending';
-            const { name: company, address } = splitManufacturer(raw.manufacturer || 'Unknown Manufacturer');
+            const { name: fallbackName, address } = splitManufacturer(raw.manufacturer || 'Unknown Manufacturer');
+            const company = signal.company_name || base.company_name || fallbackName || 'Unknown Manufacturer';
             const tags = getClassificationTags(signal.llm_analysis);
 
             let scoreColor = 'text-green-400';
@@ -223,6 +224,11 @@
                     </div>` : ''}
                     <p class="text-slate-400 text-sm mb-4">${esc(drugName)}</p>
 
+                    ${tags.length ? `
+                    <div class="mb-4 flex gap-1.5 flex-wrap">
+                        ${tags.map(t => `<span class="px-2 py-0.5 text-[10px] rounded border font-medium ${t.cls}">${t.label}</span>`).join('')}
+                    </div>` : ''}
+
                     <div class="mb-4">
                         <p class="text-xs text-slate-500 uppercase tracking-wider mb-1">Issue</p>
                         <p class="text-sm text-slate-300 line-clamp-2" title="${esc(reason)}">${esc(reason)}</p>
@@ -232,10 +238,6 @@
                     <div class="mb-5 p-3 bg-slate-800/50 rounded-lg border border-slate-700">
                         <p class="text-xs text-slate-500 uppercase tracking-wider mb-1">AI Root Cause Summary</p>
                         <p class="text-sm text-slate-300 line-clamp-2">${esc(rootCause)}</p>
-                        ${tags.length ? `
-                        <div class="mt-2 flex gap-2 flex-wrap">
-                            ${tags.map(t => `<span class="px-2 py-0.5 text-[10px] rounded border ${t.cls}">${t.label}</span>`).join('')}
-                        </div>` : ''}
                     </div>
 
                     ${paperAssessmentHtml(signal)}
