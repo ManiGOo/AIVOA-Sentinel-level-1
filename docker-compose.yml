@@ -28,3 +28,15 @@ services:
     restart: unless-stopped
     depends_on:
       - temporal
+
+  enricher:
+    build:
+      context: .
+      dockerfile: Dockerfile.enricher
+    env_file: .env
+    environment:
+      - TEMPORAL_HOST=temporal:7233
+    command: python enricher_worker.py
+    restart: unless-stopped
+    depends_on:
+      - temporal

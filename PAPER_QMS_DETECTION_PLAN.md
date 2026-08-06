@@ -35,6 +35,7 @@ behavioral signals, and company-level aggregation.
 | Columns (recently added) | `reporting_source`, `reported_by` (TEXT) — from CDSCO `str_reporting_source` / `str_reported_by_lab_or_state` |
 | Scoring | `temporal_tasks.calculate_base_score`: NSQ=20, SPURIOUS=40, paper=+30, 2026 mandate=+20, recency decay, repeat-offender bonus |
 | Stack | FastAPI (`:5000`), Temporal dev server (`:7233`), Python worker, Docker Compose |
+| **Enricher container** | `enricher` service — own Playwright image + Temporal worker on `enrichment-task-queue`; FDA adapter verified live |
 | Mode | `VIEW_ONLY=0` locally; `render.yaml` stays `VIEW_ONLY=1` for demo deploy |
 | 2025 scrape | Workflow `cdsco-scraper-workflow-2025-20260806061942` (NSQ ~1898 found + spurious) |
 
@@ -86,21 +87,26 @@ Sources:
 ## 4. Build plan
 
 ### A. Enrichment engine (Layer 1) — source-agnostic
-- **Browser-based adapters (Playwright)** — the FDA datatable is JS-driven and
-  rate-limits plain HTTP; EudraGMDP requires login. Both are solved with a
-  headless Chromium via Playwright:
-  - Drive the visible search box, then **intercept the network response**
-    (`page.on("response")`) to capture the JSON the datatable fetches from
-    `.../warning-letters/datatables-data` — no reverse-engineering needed.
-  - Real browser fingerprint (TLS/headers/cookies) passes FDA's anti-bot.
-  - One browser adapter covers both FDA (public, no login) and EudraGMDP
-    (free-account login + search).
-  - Run as a **background Temporal activity** (browser startup is heavy), not in
-    the API request path.
-  - Image: **`mcr.microsoft.com/playwright/python:v1.62.0-noble`** (worker only,
-    via `Dockerfile.worker`; app stays on `python:3.12-slim`) — Chromium +
-    system libs preinstalled. Done and verified (Chromium launches inside the
-    worker container). Polite throttling + retries.
+- **Browser-based adapters (Playwright)** — EudraGMDP requires login (a headless
+  Chromium solves it). FDA is a plain **server-side GET** — no JS interaction
+  needed, so Playwright is used there only for a real browser fingerprint:
+  - FDA: navigate to
+    `.../compliance-actions-and-activities/warning-letters?search_api_fulltext=<firm>`
+    (the exposed filter form is a GET; the table is server-rendered, NOT the
+    `datatables-data` endpoint we originally assumed) and read `#datatable tbody tr`.
+    Search is fuzzy, so rows are kept only when the **company cell** matches.
+  - EudraGMDP: login-gated; adapter does free-account login
+    (`EUDRA_GMDP_USER`/`EUDRA_GMDP_PASS`) then searches.
+  - One browser adapter covers both sources; run as a **background Temporal
+    activity**, not in the API request path.
+  - Image: **`mcr.microsoft.com/playwright/python:v1.62.0-noble`** (enricher
+    only, via `Dockerfile.enricher`; app stays on `python:3.12-slim`) — Chromium
+    + system libs preinstalled. **Done and verified live**: the `enricher`
+    container registers on `enrichment-task-queue`; an `EnrichmentWorkflow` run
+    against the live FDA site returned 1 finding for "Dabur India Limited" (URL
+    + posted date), 0 for "Captab Biotec", persisted to
+    `sdr_data.regulatory_evidence`, LLM-classified (is_paper_qms=false, reason
+    recorded). Polite throttling + retries.
   - Note: swapping the worker while a Temporal scrape is mid-flight is safe —
     the workflow lives in the Temporal server; the interrupted activity
     retries after its `start_to_close_timeout` (5 min) on the new worker.
@@ -133,10 +139,14 @@ Sources:
 
 ## 5. Open decisions / next actions
 - [ ] Create **free EudraGMDP account** → share login flow/credentials so Layer
-      1 primary source can be built and verified live.
-- [ ] Build **Playwright-based adapters** (FDA + EudraGMDP) — network-response
-      interception + real browser fingerprint; run enrichment as a Temporal
-      activity from Render (or a non-blocked IP).
+       1 primary source can be built and verified live. (FDA adapter already
+       done and verified from this IP.)
+- [x] Build **enricher container + Temporal worker** — `adapters/fda.py`
+      verified live against FDA; `adapters/eudragmdp.py` scaffolded but
+      unverified until credentials exist.
+- [ ] Wire the app: `POST /api/v1/enrichment/trigger` to start
+      `EnrichmentWorkflow` from the distinct `mfr_key` values already in
+      `regulatory_events`.
 - [ ] Decide whether the dashboard gets a dedicated "Paper QMS" tab.
 - [ ] Re-run enrichment after each new CDSCO scrape (scheduled Temporal workflow
       or manual CLI).

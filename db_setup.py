@@ -4,6 +4,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, Column, String, Integer, Date, Boolean, MetaData, Text, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.types import DateTime
 
 # 1. Define metadata with the explicit schema
 sdr_metadata = MetaData(schema='sdr_data')
@@ -35,6 +36,23 @@ class RegulatoryEvent(Base):
     
     event_date = Column(Date, default=datetime.utcnow)
 
+class RegulatoryEvidence(Base):
+    """External regulatory evidence (FDA warning letters, EudraGMDP
+    non-compliance statements) used as Layer-1 paper-QMS detection."""
+    __tablename__ = 'regulatory_evidence'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source = Column(String(50))          # 'FDA' | 'EudraGMDP'
+    firm_name = Column(Text)             # as shown by the source
+    mfr_key = Column(Text, index=True)   # normalized key (matches regulatory_events)
+    finding_date = Column(Date, nullable=True)
+    url = Column(Text)
+    evidence_text = Column(Text)
+    classification = Column(JSONB, nullable=True)  # LLM paper-QMS verdict
+    paper_qms_score = Column(Integer, default=0)
+    evidence_quote = Column(Text, default='')
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
 def init_db():
     # 3. Create the schema if it doesn't exist using a raw connection
     with engine.connect() as conn:
@@ -52,6 +70,8 @@ def init_db():
         "ADD COLUMN IF NOT EXISTS reported_by VARCHAR(100) DEFAULT ''",
         "ALTER TABLE sdr_data.regulatory_events ALTER COLUMN reporting_source TYPE TEXT",
         "ALTER TABLE sdr_data.regulatory_events ALTER COLUMN reported_by TYPE TEXT",
+        "ALTER TABLE sdr_data.regulatory_evidence "
+        "ADD COLUMN IF NOT EXISTS mfr_key TEXT",
     ]
     for sql in migrations:
         with engine.connect() as conn:

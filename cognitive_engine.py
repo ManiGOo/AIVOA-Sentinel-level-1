@@ -107,3 +107,69 @@ def analyze_cdsco_failure_batch(batch_items: List[dict]) -> dict:
     except Exception as e:
         print(f"Groq API Error: {e}")
         return {str(i): {} for i in range(len(batch_items))}
+
+def analyze_regulatory_finding(evidence_text: str, firm_name: str) -> dict:
+    """Classify one external regulatory finding for paper-QMS fingerprints.
+
+    Returns {"is_paper_qms": bool, "evidence_quote": str, "confidence": float,
+    "reason": str}. is_paper_qms is True only when the text explicitly cites a
+    documentation/data-integrity failure (manual batch records, missing
+    signatures, uncontrolled spreadsheets/logbooks, ALCOA+, transcription
+    errors, record discrepancies).
+    """
+    if not GROQ_API_KEY.startswith("gsk_"):
+        return {"is_paper_qms": False, "evidence_quote": "", "confidence": 0.0,
+                "reason": "LLM unavailable"}
+    if not evidence_text:
+        return {"is_paper_qms": False, "evidence_quote": "", "confidence": 0.0,
+                "reason": "no evidence text"}
+
+    prompt = f"""
+    You are a Pharmaceutical Compliance Auditor reviewing a regulatory finding
+    for {firm_name}.
+
+    Task: decide whether the finding indicates the firm relies on PAPER-BASED
+    quality management (paper QMS).
+
+    is_paper_qms = TRUE only if the text explicitly cites a documentation /
+    data-integrity failure, e.g.:
+    - manual/inaccurate batch production records
+    - missing or forged signatures on records
+    - uncontrolled spreadsheets, logbooks, or paper records
+    - ALCOA/ALCOA+ or data integrity violations (backdating, falsification)
+    - transcription errors, failure to record, record discrepancies
+
+    Quality failures such as failed potency, dissolution, contamination,
+    mislabeling, or failed CGMP practices WITHOUT an explicit documentation
+    component are NOT paper-QMS evidence.
+
+    Finding text:
+    {evidence_text[:4000]}
+
+    Respond ONLY with a valid JSON object:
+    {{
+      "is_paper_qms": boolean,
+      "evidence_quote": "exact fragment supporting the verdict ('' if none)",
+      "confidence": number between 0 and 1,
+      "reason": "short justification"
+    }}
+    """
+
+    try:
+        completion = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[
+                {"role": "system", "content": "You output strict JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.0,
+            max_tokens=512,
+        )
+        return json.loads(completion.choices[0].message.content)
+    except (json.JSONDecodeError, ValidationError) as e:
+        print(f"Groq Extraction Error (finding): {e}")
+    except Exception as e:
+        print(f"Groq API Error (finding): {e}")
+    return {"is_paper_qms": False, "evidence_quote": "", "confidence": 0.0,
+            "reason": "LLM error"}
