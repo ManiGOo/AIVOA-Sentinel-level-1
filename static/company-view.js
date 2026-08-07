@@ -102,6 +102,20 @@
         });
     }
 
+    function refreshHeaderNav() {
+        const p = parsePath();
+        const home = document.querySelector('#headerNav a[data-nav="/"]');
+        const companies = document.querySelector('#headerNav a[data-nav="/companies"]');
+        if (home) {
+            home.classList.toggle('border-sky-500/60', p.view === 'dashboard');
+            home.classList.toggle('border-slate-700', p.view !== 'dashboard');
+        }
+        if (companies) {
+            companies.classList.toggle('border-teal-500/60', p.view !== 'dashboard');
+            companies.classList.toggle('border-slate-700', p.view === 'dashboard');
+        }
+    }
+
     /* --------------------------- directory page --------------------------- */
 
     let dirPage = 1, dirPages = 1, dirQ = '', dirSearchTimer = null;
@@ -292,6 +306,7 @@
         if (p.view === 'directory') renderDirectory();
         if (p.view === 'company') renderCompany(p.slug);
         refreshSidebarActive();
+        refreshHeaderNav();
         window.scrollTo({ top: 0 });
     }
 

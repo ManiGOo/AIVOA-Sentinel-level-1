@@ -61,7 +61,13 @@
                 <p class="text-slate-400 mt-2">Level 1 CDSCO Scraper Dashboard</p>
             </div>
             
-            <div class="flex items-center gap-3">
+            <div id="headerNav" class="flex items-center gap-3">
+                <a href="/" data-nav="/" title="Dashboard" class="flex items-center gap-2 px-3 py-2 bg-slate-800/70 border border-slate-700 rounded-lg text-slate-300 hover:text-white hover:border-sky-500/60 transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-sky-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l9-9 9 9M5 10v10a1 1 0 001 1h3a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1h3a1 1 0 001-1V10" />
+                    </svg>
+                    <span class="text-sm font-semibold">Home</span>
+                </a>
                 <a href="/companies" data-nav="/companies" title="All companies" class="flex items-center gap-2 px-3 py-2 bg-slate-800/70 border border-slate-700 rounded-lg text-slate-300 hover:text-white hover:border-teal-500/60 transition-colors">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-teal-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14-2h-4m-6 0H5m9-6h1m-4 0h1m-4 0h1m4 0h1m-6 4h1m4 0h1" />
@@ -243,7 +249,7 @@
     <div class="hidden" id="classPreloader" aria-hidden="true"><span class="flex items-center gap-3 p-2.5 rounded-lg border cursor-pointer transition-colors border-teal-600/50 bg-slate-800/70 border-slate-700/50 bg-slate-800/40 hover:bg-slate-800 hover:border-slate-600 w-7 h-7 shrink-0 rounded-full text-xs font-bold items-center justify-center bg-gradient-to-br from-amber-300 to-yellow-600 text-slate-900 bg-gradient-to-br from-slate-200 to-slate-400 text-slate-800 bg-gradient-to-br from-orange-400 to-amber-700 bg-slate-700 text-slate-300 min-w-0 flex-1 block text-sm font-medium text-slate-100 truncate block text-[11px] text-slate-500 ml-auto text-sm font-bold text-red-400 text-yellow-400 text-green-400 text-sm text-slate-500 py-6 text-center text-sm text-red-400 py-12 glass-panel p-6 glass-panel p-5 glass-panel p-4 flex flex-wrap items-center justify-between gap-3 mb-6 text-2xl font-semibold text-sm text-slate-400 mt-1 w-full sm:w-72 px-3 py-2 bg-slate-800/70 border border-slate-700 rounded-lg focus:outline-none focus:border-teal-500 text-xs text-slate-400 mb-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 col-span-full items-center justify-center mt-8 px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed hover:border-teal-500/60 hover:-translate-y-0.5 transition-all cursor-pointer block items-start justify-between gap-3 mb-3 w-8 h-8 rounded-full text-sm font-bold text-right text-base text-white leading-snug mb-1 text-xs text-slate-500 mb-3 w-full bg-slate-800 h-2 overflow-hidden mb-3 h-full bg-gradient-to-r from-teal-500 to-purple-500 flex flex-wrap gap-1.5 px-2 py-0.5 text-[10px] rounded border border-slate-700 bg-slate-800/50 text-slate-400 border-red-800/50 bg-red-900/20 text-red-300 border-yellow-800/50 bg-yellow-900/20 text-yellow-300 mb-4 text-sm text-slate-400 hover:text-teal-300 transition-colors text-slate-600 mx-2 text-slate-200 mb-6 flex flex-wrap items-end justify-between gap-6 min-w-0 text-[11px] uppercase tracking-wider text-slate-500 mb-2 text-3xl font-bold text-white leading-tight mt-2 mt-3 text-right text-5xl font-bold text-xl font-semibold text-slate-500 tracking-wide mt-1 grid grid-cols-2 md:grid-cols-4 gap-4 pt-6 border-t border-slate-700/60 text-lg font-bold text-white text-red-400 mb-2 text-center"></span></div>
 
     <script src="/static/signal-card.js?v=12"></script>
-    <script src="/static/company-view.js?v=3"></script>
+    <script src="/static/company-view.js?v=4"></script>
     <script src="/static/web-evidence.js?v=4"></script>
     <script>
         let allSignals = [];
