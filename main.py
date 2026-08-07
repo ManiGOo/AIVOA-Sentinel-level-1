@@ -214,6 +214,31 @@ def _prior_event_counts(db) -> dict:
     return counts
 
 
+def _is_paper_event(event) -> bool:
+    """Whether an event is paper-QMS (explicit or deductive). Prefer the
+    persisted paper_evidence_class (the same source the card scoring uses);
+    fall back to the LLM flag for rows written before that column existed."""
+    cls = getattr(event, "paper_evidence_class", None)
+    if cls:
+        return cls in ("explicit", "deductive")
+    return bool((event.llm_analysis or {}).get("is_paper_failure"))
+
+
+def _event_max_possible(event, counts: dict) -> int:
+    """Grounded score ceiling for ONE event, identical to the card formula in
+    _build_signal_card: only the bonuses this record can actually earn."""
+    base = 40 if event.event_type == 'SPURIOUS_DRUG' else 20
+    analysis = event.llm_analysis or {}
+    mandate_flags = [k for k in ('violates_rule_96', 'violates_sub_rule_7', 'violates_schedule_h2')
+                     if analysis.get(k)]
+    mandate_bonus = 20 if (mandate_flags and event.event_date and event.event_date >= MANDATE_START) else 0
+    mfr = (event.raw_details or {}).get('manufacturer', '')
+    prior = max(counts.get(mfr_key(mfr), 0) - 1, 0)
+    repeat_bonus = repeat_offender_bonus(prior)
+    recency = recency_weight(event.event_date)
+    return round((base + 30 + mandate_bonus) * recency) + repeat_bonus + 25
+
+
 def _web_evidence_bonus(items: list) -> int:
     """Capped, add-only lead-score bonus derived from stored web evidence.
     Absence of evidence never penalises; external corroboration adds urgency
@@ -532,6 +557,7 @@ def get_company_ranking(
     q = (q or "").strip().lower()
 
     events = db.query(RegulatoryEvent).order_by(RegulatoryEvent.score.desc()).all()
+    counts = _prior_event_counts(db)
     groups = {}
     for e in events:
         mfr = (e.raw_details or {}).get("manufacturer", "")
@@ -552,6 +578,7 @@ def get_company_ranking(
                 "name": clean_company_name(PAREN.sub("", mfr)) or gkey,
                 "slug": _slug(gkey),
                 "score": 0,
+                "peak": None,
                 "event_count": 0,
                 "sum_score": 0,
                 "latest": None,
@@ -564,14 +591,16 @@ def get_company_ranking(
         g["sum_score"] += e.score or 0
         if (e.score or 0) > g["score"]:
             g["score"] = e.score or 0
+            g["peak"] = e
         d = e.event_date
         if d and (g["latest"] is None or d > g["latest"]):
             g["latest"] = d
         g["reg_set"].add(e.regulator or "CDSCO")
-        a = e.llm_analysis or {}
-        if a.get("is_paper_failure"):
+        if _is_paper_event(e):
             g["paper"] += 1
-        if any(a.get(k) for k in ("violates_rule_96", "violates_sub_rule_7", "violates_schedule_h2")):
+        a = e.llm_analysis or {}
+        if (e.event_date and e.event_date >= MANDATE_START) and any(
+                a.get(k) for k in ("violates_rule_96", "violates_sub_rule_7", "violates_schedule_h2")):
             g["mandates"] += 1
 
     items = [{
@@ -579,6 +608,7 @@ def get_company_ranking(
         "name": g["name"],
         "slug": g["slug"],
         "score": g["score"],
+        "max_possible_score": _event_max_possible(g["peak"], counts) if g["peak"] else 0,
         "event_count": g["event_count"],
         "avg_score": round(g["sum_score"] / g["event_count"], 1),
         "latest_date": str(g["latest"]) if g["latest"] else "",
@@ -646,10 +676,11 @@ def get_company_signals(slug: str, db: Session = Depends(get_db)):
         "latest_date": str(max(dates)) if dates else "",
         "regulators": sorted({e.regulator or "CDSCO" for e in evs}),
         "years": sorted({str(d)[:4] for d in dates}),
-        "paper_count": sum(1 for e in evs if (e.llm_analysis or {}).get("is_paper_failure")),
-        "mandate_count": sum(1 for e in evs if any(
-            (e.llm_analysis or {}).get(k)
-            for k in ("violates_rule_96", "violates_sub_rule_7", "violates_schedule_h2"))),
+        "paper_count": sum(1 for e in evs if _is_paper_event(e)),
+        "mandate_count": sum(1 for e in evs if
+            e.event_date and e.event_date >= MANDATE_START and any(
+                (e.llm_analysis or {}).get(k)
+                for k in ("violates_rule_96", "violates_sub_rule_7", "violates_schedule_h2"))),
         "evidence_count": len(evidence_by_key.get(ckey, [])),
         "web_evidence_count": sum(len(v) for k, v in web_by_key.items() if k == gkey),
     }
