@@ -17,11 +17,28 @@ stays inside the Groq token budget (dev plan = **1M tokens/day**) and we can wai
 tokens to refill between runs. The workflow already supports per-year triggers.
 
 ```bash
-# One year per run (year is REQUIRED):
+# One year per run (year is REQUIRED). Run at most ONE per day:
 curl -X POST http://localhost:5000/api/v1/scraper/trigger \
   -H 'Content-Type: application/json' \
   -d '{"year": "2026"}'
 ```
+
+### All-year command block (run one line per day, never the full backfill)
+
+```bash
+curl -X POST http://localhost:5000/api/v1/scraper/trigger -H 'Content-Type: application/json' -d '{"year": "2026"}'
+curl -X POST http://localhost:5000/api/v1/scraper/trigger -H 'Content-Type: application/json' -d '{"year": "2025"}'
+curl -X POST http://localhost:5000/api/v1/scraper/trigger -H 'Content-Type: application/json' -d '{"year": "2024"}'
+curl -X POST http://localhost:5000/api/v1/scraper/trigger -H 'Content-Type: application/json' -d '{"year": "2023"}'
+curl -X POST http://localhost:5000/api/v1/scraper/trigger -H 'Content-Type: application/json' -d '{"year": "2022"}'
+curl -X POST http://localhost:5000/api/v1/scraper/trigger -H 'Content-Type: application/json' -d '{"year": "2021"}'
+curl -X POST http://localhost:5000/api/v1/scraper/trigger -H 'Content-Type: application/json' -d '{"year": "2020"}'
+curl -X POST http://localhost:5000/api/v1/scraper/trigger -H 'Content-Type: application/json' -d '{"year": "2019"}'
+```
+
+> ⚠️ `{"full": true}` scrapes ALL years in one session — ~6,000–7,300 records in one
+> run. With the 1M/day Groq budget that risks hitting rate limits / burning the whole
+> day's tokens and leaving nothing for FDA/EUDRAGMDP. Keep it year-by-year.
 
 ### Recommended order
 
