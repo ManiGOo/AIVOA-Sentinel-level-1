@@ -12,6 +12,7 @@ with workflow.unsafe.imports_passed_through():
     from cognitive_engine import generate_search_queries, classify_web_evidence
     from temporal_tasks import mfr_key
     from company_names import clean_company_name, PAREN
+    from signal_scoring import recompute_scores_for_group_keys, _group_key
 
 @activity.defn
 async def generate_queries_activity(event_id: str) -> list[str]:
@@ -267,6 +268,10 @@ async def fetch_and_classify_articles(event_id: str, search_results: list[dict])
                 await browser.close()
 
             db.commit()
+            if processed > 0:
+                recomputed = recompute_scores_for_group_keys(db, {_group_key(mfr)})
+                print(f"Web evidence saved for {mfr!r}: {processed} new items, "
+                      f"recomputed scores for {recomputed} event(s)")
             return {"status": "success", "processed": processed}
     finally:
         db.close()

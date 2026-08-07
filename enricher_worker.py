@@ -1,5 +1,6 @@
 import asyncio
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 from db_setup import init_db
 from temporalio.client import Client
@@ -11,6 +12,13 @@ from web_evidence_tasks import (
     search_web_for_queries,
     fetch_and_classify_articles,
 )
+from lead_research_tasks import (
+    LeadResearchWorkflow,
+    search_lead_web_activity,
+    extract_lead_details_activity,
+    save_lead_research_activity,
+    mark_lead_failed_activity,
+)
 
 
 async def main():
@@ -19,13 +27,18 @@ async def main():
     worker = Worker(
         client,
         task_queue="enrichment-task-queue",
-        workflows=[EnrichmentWorkflow, WebEvidenceWorkflow],
+        workflows=[EnrichmentWorkflow, WebEvidenceWorkflow, LeadResearchWorkflow],
         activities=[
             fetch_external_evidence,
             generate_queries_activity,
             search_web_for_queries,
             fetch_and_classify_articles,
+            search_lead_web_activity,
+            extract_lead_details_activity,
+            save_lead_research_activity,
+            mark_lead_failed_activity,
         ],
+        activity_executor=ThreadPoolExecutor(max_workers=20),
     )
     print("Starting Temporal Worker for Enrichment on 'enrichment-task-queue'...")
     await worker.run()

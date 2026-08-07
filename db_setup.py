@@ -102,6 +102,24 @@ class WebEvidence(Base):
     fetched_at = Column(DateTime, default=datetime.utcnow)
 
 
+class CompanyLead(Base):
+    """Lead research outcome for one company: website, LinkedIn page and
+    hiring signal (current job postings + hiring-news mentions)."""
+    __tablename__ = 'company_leads'
+
+    company_key = Column(String(255), primary_key=True)
+    company_name = Column(Text, default='')
+    website = Column(Text, default='')
+    linkedin_url = Column(Text, default='')
+    hiring = Column(JSONB, default=list)          # [{title, location, posted, url}]
+    hiring_news = Column(JSONB, default=list)     # [{title, url, source, snippet, date}]
+    summary = Column(JSONB, default=dict)         # raw research/notes
+    status = Column(String(20), default='not_started')  # not_started | running | completed | failed
+    error = Column(Text, default='')
+    workflow_id = Column(Text, default='')
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
 def init_db():
     # 3. Create the schema if it doesn't exist using a raw connection
     with engine.connect() as conn:

@@ -13,3 +13,4 @@ tavily-python
 readability-lxml
 lxml
 html2text
+mcp[cli]>=2.0.0
