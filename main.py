@@ -542,6 +542,19 @@ def get_high_priority_signals(
         "paper_count": paper_count,
     }
 
+@app.get("/api/v1/companies/count")
+def get_company_count(db: Session = Depends(get_db)):
+    """Total unique company entities (same _group_key the ranking uses). Cheap:
+    one column scan, dedupe in Python."""
+    keys = set()
+    mfr_col = func.coalesce(RegulatoryEvent.raw_details['manufacturer'].astext, '')
+    for (mfr,) in db.query(mfr_col).all():
+        gkey = _group_key(mfr)
+        if gkey:
+            keys.add(gkey)
+    return {"total": len(keys)}
+
+
 @app.get("/api/v1/companies/ranking", response_model=CompanyRankingResponse)
 def get_company_ranking(
     page: int = 1,

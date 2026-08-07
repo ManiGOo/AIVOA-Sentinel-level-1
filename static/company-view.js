@@ -79,6 +79,8 @@
             sidebarLoaded = start + (data.items || []).length - 1;
             sidebarPage++;
             if (moreBtn) moreBtn.classList.toggle('hidden', sidebarLoaded >= sidebarTotal);
+            const badge = document.getElementById('sidebarTotalBadge');
+            if (badge) badge.textContent = sidebarTotal.toLocaleString();
         } catch (e) {
             if (reset) list.innerHTML = '<div class="text-sm text-red-400 py-6 text-center">Failed to load leaderboard.</div>';
         }
@@ -330,4 +332,15 @@
     loadSidebarPage(true);
     applySidebarState();
     route();
+
+    fetch('/api/v1/companies/count')
+        .then(r => r.json())
+        .then(d => {
+            const el = document.getElementById('companyCount');
+            if (el) el.textContent = (d.total || 0).toLocaleString();
+        })
+        .catch(() => {
+            const el = document.getElementById('companyCount');
+            if (el) el.textContent = '–';
+        });
 })();
