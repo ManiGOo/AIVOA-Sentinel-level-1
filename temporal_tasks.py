@@ -222,6 +222,17 @@ def _probe_cdsco(session, tab: str, year: str, attempts: int = 3) -> str:
     )
 
 @activity.defn
+async def get_cdsco_reporting_years(event_type: str) -> dict:
+    """Return the list of reporting years available for an event type.
+
+    Extracted as a separate activity so the workflow can iterate per-year
+    and avoid returning all scraped data in a single oversized payload.
+    """
+    tab = _tab(event_type)
+    years = get_reporting_years(tab)
+    return {"years": years}
+
+@activity.defn
 async def scrape_cdsco_endpoint(event_type: str, year: str = None) -> dict:
     tab = _tab(event_type)
 
@@ -233,7 +244,9 @@ async def scrape_cdsco_endpoint(event_type: str, year: str = None) -> dict:
         'X-Requested-With': 'XMLHttpRequest'
     })
 
-    # A year=None means full backfill across all reporting years.
+    # When year is provided, scrape only that year.
+    # When year is None, fall back to all years (kept for backward compat
+    # but the workflow now always passes a specific year).
     years = [str(year)] if year else get_reporting_years(tab)
 
     _probe_cdsco(session, tab, years[-1])
@@ -472,36 +485,57 @@ class CDSCOScraperWorkflow:
         results = {}
         for event_type in ["NSQ_DRUG", "SPURIOUS_DRUG"]:
             self._event_type = event_type
-            # 1. Scrape data (loop all months; year=None = full backfill).
-            #    NO LLM here: AI enrichment + scoring is a separate workflow
-            #    (CDSCOEnrichmentWorkflow) so scraping is never rate-limited.
-            scrape_result = await workflow.execute_activity(
-                scrape_cdsco_endpoint,
-                args=[event_type, year],
-                start_to_close_timeout=timedelta(minutes=15),
-            )
 
-            items = scrape_result.get("items", [])
-            total_items = len(items)
-            self._total += total_items
-            month_warnings = scrape_result.get("warnings", [])
-            self._warnings.extend(month_warnings)
-            for warning in month_warnings:
-                workflow.logger.warning(warning)
+            # Determine years to scrape: single year or full backfill.
+            if year:
+                years_to_scrape = [str(year)]
+            else:
+                years_result = await workflow.execute_activity(
+                    get_cdsco_reporting_years,
+                    args=[event_type],
+                    start_to_close_timeout=timedelta(minutes=2),
+                )
+                years_to_scrape = years_result.get("years", [])
 
-            # 2. Save raw rows (dedup) — llm_analysis={}, score=0 for now.
-            save_result = await workflow.execute_activity(
-                save_raw_to_db,
-                {"event_type": event_type, "items": items},
-                start_to_close_timeout=timedelta(minutes=2),
-            )
+            type_total = 0
+            type_warnings = []
+            type_years = []
 
-            self._processed += total_items
+            # Scrape + save one year at a time to stay under Temporal's
+            # 2 MB payload limit (full backfill was >2 MB in one shot).
+            for y in years_to_scrape:
+                scrape_result = await workflow.execute_activity(
+                    scrape_cdsco_endpoint,
+                    args=[event_type, y],
+                    start_to_close_timeout=timedelta(minutes=15),
+                )
+
+                items = scrape_result.get("items", [])
+                year_warnings = scrape_result.get("warnings", [])
+                type_warnings.extend(year_warnings)
+                for warning in year_warnings:
+                    workflow.logger.warning(warning)
+
+                self._total += len(items)
+                type_total += len(items)
+                type_years.extend(scrape_result.get("years", []))
+
+                # Save this year's rows immediately.
+                if items:
+                    await workflow.execute_activity(
+                        save_raw_to_db,
+                        {"event_type": event_type, "items": items},
+                        start_to_close_timeout=timedelta(minutes=2),
+                    )
+
+                self._processed += len(items)
+
+            self._warnings.extend(type_warnings)
             results[event_type] = {
-                "total_found": total_items,
-                "saved": save_result,
-                "years": scrape_result.get("years", []),
-                "warnings": month_warnings,
+                "total_found": type_total,
+                "saved": f"saved across {len(years_to_scrape)} years",
+                "years": type_years,
+                "warnings": type_warnings,
             }
 
         self._event_type = ""

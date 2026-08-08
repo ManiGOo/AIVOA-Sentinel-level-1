@@ -8,6 +8,7 @@ from temporal_tasks import (
     CDSCOEnrichmentWorkflow,
     FailureModeBackfillWorkflow,
     ScheduleMGapBackfillWorkflow,
+    get_cdsco_reporting_years,
     scrape_cdsco_endpoint,
     save_raw_to_db,
     load_enrichment_candidates,
@@ -35,6 +36,7 @@ async def main():
             ScheduleMGapBackfillWorkflow,
         ],
         activities=[
+            get_cdsco_reporting_years,
             scrape_cdsco_endpoint, save_raw_to_db,
             load_enrichment_candidates, process_batch_with_llm, apply_enrichment_to_db,
             load_backfill_candidates, classify_failure_modes_activity, apply_failure_modes,
