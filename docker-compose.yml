@@ -36,6 +36,8 @@ services:
     env_file: .env
     environment:
       - TEMPORAL_HOST=temporal:7233
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: python enricher_worker.py
     restart: unless-stopped
     depends_on:

@@ -20,6 +20,14 @@ from lead_research_tasks import (
     evaluate_and_save_lead_activity,
     mark_lead_failed_activity,
 )
+from campaign_tasks import (
+    CampaignWorkflow,
+    create_campaign_activity,
+    start_campaign_activity,
+    generate_lead_messages_activity,
+    send_message_activity,
+    complete_campaign_activity,
+)
 
 
 async def main():
@@ -28,7 +36,7 @@ async def main():
     worker = Worker(
         client,
         task_queue="enrichment-task-queue",
-        workflows=[EnrichmentWorkflow, WebEvidenceWorkflow, LeadResearchWorkflow],
+        workflows=[EnrichmentWorkflow, WebEvidenceWorkflow, LeadResearchWorkflow, CampaignWorkflow],
         activities=[
             fetch_external_evidence,
             generate_queries_activity,
@@ -39,6 +47,11 @@ async def main():
             search_intent_signals_activity,
             evaluate_and_save_lead_activity,
             mark_lead_failed_activity,
+            create_campaign_activity,
+            start_campaign_activity,
+            generate_lead_messages_activity,
+            send_message_activity,
+            complete_campaign_activity,
         ],
         activity_executor=ThreadPoolExecutor(max_workers=20),
     )

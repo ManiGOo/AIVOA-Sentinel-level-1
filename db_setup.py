@@ -125,6 +125,40 @@ class CompanyLead(Base):
     fetched_at = Column(DateTime, default=datetime.utcnow)
 
 
+class Campaign(Base):
+    """A sales outreach campaign targeting a set of researched leads through
+    a multi-step sequence (email + LinkedIn touches)."""
+    __tablename__ = 'campaigns'
+
+    campaign_id = Column(String(255), primary_key=True)
+    name = Column(Text, default='')
+    status = Column(String(20), default='draft')  # draft | running | paused | completed
+    sequence_config = Column(JSONB, default=list)  # [{step, channel, delay_days, template}]
+    created_by = Column(Text, default='')
+    created_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    workflow_id = Column(Text, default='')
+
+
+class CampaignLead(Base):
+    """Per-lead state within a campaign: which step it's on, the generated
+    messages, replies received."""
+    __tablename__ = 'campaign_leads'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    campaign_id = Column(String(255), index=True)
+    company_key = Column(String(255), index=True)
+    status = Column(String(20), default='pending')  # pending | contacted | replied | not_interested | converted
+    current_step = Column(Integer, default=0)
+    decision_maker = Column(JSONB, default=dict)  # {name, role, linkedin_url, email}
+    messages = Column(JSONB, default=list)  # [{step, channel, subject, body, sent_at, status}]
+    lead_context = Column(JSONB, default=dict)  # snapshot of triggers/hiring used for personalization
+    last_contact_at = Column(DateTime, nullable=True)
+    replied_at = Column(DateTime, nullable=True)
+    notes = Column(Text, default='')
+
+
 def init_db():
     # 3. Create the schema if it doesn't exist using a raw connection
     with engine.connect() as conn:
