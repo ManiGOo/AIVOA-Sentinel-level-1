@@ -322,6 +322,9 @@ def _heuristic_evaluate(company_name: str, profile: dict, people: dict, signals:
         key=lambda x: x.get("relevance_score") or 0, reverse=True,
     )
     company_tokens = _company_tokens(company_name)
+    company_clean = clean_company_name(PAREN.sub("", company_name or "")).lower()
+    generic = {"pharmaceutical", "pharmaceuticals", "pharma", "private", "limited", "pvt", "ltd"}
+    distinctive_tokens = company_tokens - generic
     decision_makers = []
     seen_names = set()
     for it in people_items:
@@ -329,14 +332,42 @@ def _heuristic_evaluate(company_name: str, profile: dict, people: dict, signals:
         name = re.sub(r"\s+", " ", raw_name).strip()
         if not name or len(name) < 3 or name.lower() in seen_names:
             continue
-        # Skip generic job listings (e.g. "1,000+ Quality Manager jobs")
+        # Skip generic job listings and company-description pages
         if re.match(r"^\d", name) or "jobs in" in name.lower() or "hiring" == name.lower():
             continue
-        hay = (it.get("title", "") + " " + it.get("snippet", "")).lower()
-        # Verify the person actually works at the target company (fuzzy match)
-        works_here = _fuzzy_company_match(company_name, it.get("title", "") + " " + it.get("snippet", ""))
+        # Skip if the "name" is actually the company itself (not a person)
+        name_lower = name.lower()
+        if any(t in name_lower for t in company_tokens if len(t) >= 6) and len(name.split()) >= 4:
+            continue
+        # Skip if it looks like a company description (no person name)
+        if any(name_lower.startswith(w) for w in ("the ", "our ", "we ", "this ")):
+            continue
+        title = it.get("title", "")
+        snippet = it.get("snippet", "")
+        hay = (title + " " + snippet).lower()
+
+        works_here = _fuzzy_company_match(company_name, title + " " + snippet)
         if not works_here:
             continue
+
+        # Confidence: how directly does the company name appear as their employer?
+        employer_field = title.split("-")[-1].strip().lower() if "-" in title else ""
+        employer_field += " " + snippet[:200].lower()
+        # Direct: distinctive token appears right next to employer context
+        direct_employer = (
+            any(t in employer_field for t in distinctive_tokens)
+            or company_clean in employer_field
+            or re.search(r"(at|@)\s*" + re.escape(company_clean.split()[0]), employer_field)
+        )
+        # Strong: the result's relevance classifier also flagged company_match
+        strong_relevance = (it.get("relevance_score") or 0) >= 70
+        if direct_employer and strong_relevance:
+            confidence = "high"
+        elif direct_employer or strong_relevance:
+            confidence = "medium"
+        else:
+            confidence = "low"
+
         role_type = "other"
         if any(k in hay for k in ("qa head", "qa manager", "quality assurance head", "quality manager", "quality control manager")):
             role_type = "qa_head"
@@ -351,13 +382,14 @@ def _heuristic_evaluate(company_name: str, profile: dict, people: dict, signals:
         linkedin_url = it.get("url", "") if "linkedin.com" in it.get("url", "") else ""
         decision_makers.append({
             "name": name,
-            "role": it.get("title", "").strip(),
+            "role": title.strip(),
             "role_type": role_type,
             "linkedin_url": linkedin_url,
             "email": "",
+            "confidence": confidence,
         })
         seen_names.add(name.lower())
-        if len(decision_makers) >= 5:
+        if len(decision_makers) >= 6:
             break
 
     intent_signals = []
@@ -421,6 +453,13 @@ async def evaluate_and_save_lead_activity(payload: dict) -> dict:
         signals = payload.get("signals", {})
 
         evaluated = _evaluate_lead(company_name, profile, people, signals)
+
+        for dm in evaluated.get("decision_makers", []):
+            dm.setdefault("confidence", "low")
+        evaluated["decision_makers"] = sorted(
+            evaluated.get("decision_makers", []),
+            key=lambda d: {"high": 0, "medium": 1, "low": 2}.get(d.get("confidence", "low"), 2),
+        )
 
         # Best-effort email extraction from people snippets
         for dm in evaluated.get("decision_makers", []):
