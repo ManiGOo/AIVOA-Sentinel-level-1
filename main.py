@@ -869,6 +869,142 @@ async def enrichment_status(workflow_id: str):
         "error": error,
     }
 
+class RegulatoryPullRequest(BaseModel):
+    source: str = "fda"                 # fda | eudragmdp | all
+    from_date: str = "2022-01-01"
+    to_date: str = "2026-12-31"
+    max_records: int = 10000
+
+
+@app.post("/api/v1/regulatory/trigger")
+async def trigger_regulatory_pull(req: Optional[RegulatoryPullRequest] = None):
+    """Stage 1: bulk-scrape every FDA warning letter / EudraGMDP statement in
+    the date range into the raw staging table (no per-company filter)."""
+    req = req or RegulatoryPullRequest()
+    if VIEW_ONLY:
+        raise HTTPException(status_code=403, detail="Scraping is disabled in view-only mode.")
+    if req.source not in ("fda", "eudragmdp", "all"):
+        raise HTTPException(status_code=400, detail="source must be 'fda', 'eudragmdp' or 'all'")
+    sources = ["fda", "eudragmdp"] if req.source == "all" else [req.source]
+    try:
+        client = await Client.connect(os.environ.get("TEMPORAL_HOST", "localhost:7233"))
+        workflow_ids = []
+        for source in sources:
+            workflow_id = f"regulatory-pull-{source}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+            handle = await client.start_workflow(
+                "RegulatoryFullPullWorkflow",
+                args=[source, req.from_date, req.to_date, req.max_records],
+                id=workflow_id,
+                task_queue="enrichment-task-queue",
+            )
+            workflow_ids.append(handle.id)
+        return {
+            "status": "SUCCESS",
+            "message": f"Full pull started for {sources} ({req.from_date} -> {req.to_date})",
+            "workflow_ids": workflow_ids,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/regulatory/status")
+async def regulatory_pull_status():
+    """Poll the running RegulatoryFullPullWorkflow(s): phase, rows, inserted."""
+    client = await Client.connect(os.environ.get("TEMPORAL_HOST", "localhost:7233"))
+    running = []
+    async for e in client.list_workflows(
+        query="WorkflowType = 'RegulatoryFullPullWorkflow' AND ExecutionStatus = 'Running'",
+        limit=10,
+    ):
+        try:
+            handle = client.get_workflow_handle(e.id)
+            progress = await handle.query("progress")
+        except Exception:
+            progress = {}
+        running.append({"workflow_id": e.id, **progress})
+    return {"running": running}
+
+
+class RegulatoryCheckRequest(BaseModel):
+    firm_name: Optional[str] = None     # company to check (preferred)
+    event_id: Optional[str] = None      # or resolve manufacturer from a CDSCO event
+    source: str = "all"                 # fda | eudragmdp | all
+
+
+@app.post("/api/v1/regulatory/check")
+async def check_scraped_records(req: RegulatoryCheckRequest,
+                                db: Session = Depends(get_db)):
+    """Stage 2: check one company against the scraped staging records —
+    fuzzy-match, fetch letter bodies, classify, and link into
+    regulatory_evidence. The frontend polls
+    /api/v1/regulatory/check/status/{workflow_id}.
+    """
+    if VIEW_ONLY:
+        raise HTTPException(status_code=403, detail="Check disabled in view-only mode.")
+    if req.source not in ("fda", "eudragmdp", "all"):
+        raise HTTPException(status_code=400, detail="source must be 'fda', 'eudragmdp' or 'all'")
+    firm = req.firm_name
+    if req.event_id:
+        event = db.query(RegulatoryEvent).filter(
+            RegulatoryEvent.event_id == req.event_id).first()
+        if not event:
+            raise HTTPException(status_code=404, detail="Signal event not found")
+        firm = (event.raw_details or {}).get("manufacturer", "")
+    if not firm or not mfr_key(firm):
+        raise HTTPException(status_code=400, detail="Manufacturer is a placeholder or missing")
+
+    sources = ["fda", "eudragmdp"] if req.source == "all" else [req.source]
+    try:
+        client = await Client.connect(os.environ.get("TEMPORAL_HOST", "localhost:7233"))
+        workflow_ids = []
+        for source in sources:
+            workflow_id = f"regulatory-check-{source}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+            handle = await client.start_workflow(
+                "ScrapedRecordCheckWorkflow",
+                args=[firm, source],
+                id=workflow_id,
+                task_queue="enrichment-task-queue",
+            )
+            workflow_ids.append(handle.id)
+        return {"status": "SUCCESS", "firm_name": firm, "workflow_ids": workflow_ids}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/regulatory/check/status/{workflow_id}")
+async def regulatory_check_status(workflow_id: str):
+    """Poll a ScrapedRecordCheckWorkflow (same contract as enrichment/status)."""
+    client = await Client.connect(os.environ.get("TEMPORAL_HOST", "localhost:7233"))
+    handle = client.get_workflow_handle(workflow_id)
+    try:
+        desc = await handle.describe()
+        state = desc.status.name
+    except Exception:
+        return {"workflow_id": workflow_id, "state": "UNKNOWN"}
+    progress = {}
+    if state in ("RUNNING", "COMPLETED"):
+        try:
+            progress = await handle.query("progress")
+        except Exception:
+            progress = {}
+    result = None
+    error = None
+    if state in ("COMPLETED", "FAILED", "TERMINATED", "CANCELED"):
+        try:
+            result = await handle.result()
+        except FailureError as e:
+            error = str(e)
+        except Exception as e:
+            error = str(e)
+    return {
+        "workflow_id": workflow_id,
+        "state": state,
+        "progress": progress,
+        "result": result,
+        "error": error,
+    }
+
+
 @app.post("/api/v1/web-evidence/search/{event_id}")
 async def trigger_web_evidence_search(event_id: str, db: Session = Depends(get_db)):
     """Starts the WebEvidenceWorkflow for a specific record."""

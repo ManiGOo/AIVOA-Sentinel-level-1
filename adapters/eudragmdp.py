@@ -101,3 +101,64 @@ class EudraGMDPAdapter(EnrichmentAdapter):
             return findings
         finally:
             await page.close()
+
+    async def scrape_all(self, browser, from_date: str = "2022-01-01",
+                         to_date: str = "2026-12-31", limit: int = 1000,
+                         heartbeat=None) -> list[Finding]:
+        """Full-pull every GMP non-compliance statement in the date range.
+
+        Unlike ``search`` there is no firm filter — the date-range form returns
+        every statement, and we drill into each one's statement body (the
+        session is URL/cookie scoped to the page, so we stay on the same tab).
+        ``heartbeat`` (optional callable) lets the caller keep Temporal alive
+        during the throttled drilldowns.
+        """
+        page = await browser.new_page()
+        findings = []
+        try:
+            await page.goto(self.search_url, wait_until="domcontentloaded",
+                            timeout=60000)
+            await page.fill("input[name=fromDate]", from_date)
+            await page.fill("input[name=toDate]", to_date)
+            await page.evaluate("document.forms.GMPNCSearchForm.submit()")
+            await page.wait_for_load_state("domcontentloaded", timeout=60000)
+            await asyncio.sleep(2)
+
+            table = await self._results_table(page)
+            if table is None:
+                return findings
+
+            rows = table.locator("tr")
+            matches = []
+            for i in range(1, await rows.count()):  # skip header row
+                cells = [c.strip() for c in await rows.nth(i).locator("td").all_inner_texts()]
+                if len(cells) < 11:
+                    continue
+                link = rows.nth(i).locator("a").first
+                href = await link.evaluate("el => el.href") if await link.count() else ""
+                matches.append((cells[3], cells[10], href))
+
+            for idx, (site, issue_date, href) in enumerate(matches):
+                if heartbeat:
+                    heartbeat({"scraped": idx, "total": len(matches)})
+                if not href:
+                    continue
+                await asyncio.sleep(random.uniform(2.0, 5.0))
+                await page.goto(href, wait_until="domcontentloaded", timeout=60000)
+                await asyncio.sleep(2)
+                body = await page.locator("body").inner_text()
+                text = _statement_section(body)
+                findings.append(Finding(
+                    source=self.source,
+                    firm_name=site,
+                    finding_date=issue_date,
+                    url=href,
+                    subject=issue_date,
+                    evidence_text=text,
+                ))
+                if len(findings) >= limit:
+                    break
+
+            return findings
+        finally:
+            await page.close()

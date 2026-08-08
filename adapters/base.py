@@ -10,6 +10,7 @@ class Finding:
     url: str = ""
     evidence_text: str = ""
     evidence_quote: str = ""
+    subject: str = ""
     classification: dict = field(default_factory=dict)
     paper_qms_score: int = 0
     mfr_key: str = ""          # normalized raw manufacturer (links to regulatory_events)

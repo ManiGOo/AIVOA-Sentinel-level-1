@@ -82,6 +82,29 @@ class EnrichmentCheck(Base):
     error = Column(Text, default='')
     checked_at = Column(DateTime, default=datetime.utcnow)
 
+class ScrapedRegulatoryRecord(Base):
+    """Raw regulatory records pulled in bulk from public sources (FDA warning
+    letters, EudraGMDP non-compliance statements) BEFORE per-company
+    enrichment links and classifies them into ``regulatory_evidence``.
+
+    ``url`` is the natural key per source, so repeated full pulls upsert
+    without duplicating rows. ``evidence_text`` holds the summary row data
+    (subject / issuing office) at scrape time; the per-company link step
+    fetches the full letter/statement body on demand and caches it here.
+    """
+    __tablename__ = 'scraped_regulatory_records'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source = Column(String(50), index=True)    # 'FDA' | 'EudraGMDP'
+    firm_name = Column(Text)                    # as shown by the source
+    finding_date = Column(Date, nullable=True)
+    url = Column(Text)
+    subject = Column(Text, default='')          # violation subject / report no.
+    evidence_text = Column(Text, default='')    # summary row or cached body
+    status = Column(String(20), default='raw', index=True)  # raw | linked | skipped
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
 class WebEvidence(Base):
     """Web evidence found by the agent for a specific manufacturer/event."""
     __tablename__ = 'web_evidence'
@@ -196,6 +219,12 @@ def init_db():
         "ON sdr_data.enrichment_checks (company_key)",
         "CREATE INDEX IF NOT EXISTS ix_web_evidence_mfr_key "
         "ON sdr_data.web_evidence (mfr_key)",
+        "ALTER TABLE sdr_data.scraped_regulatory_records "
+        "ADD COLUMN IF NOT EXISTS subject TEXT DEFAULT ''",
+        "ALTER TABLE sdr_data.scraped_regulatory_records "
+        "ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'raw'",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_scraped_records_source_url "
+        "ON sdr_data.scraped_regulatory_records (source, url)",
     ]
     for sql in migrations:
         with engine.connect() as conn:

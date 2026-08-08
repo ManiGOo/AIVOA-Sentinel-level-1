@@ -276,6 +276,106 @@ async def get_enrichment_status(workflow_id: str) -> dict:
         return {"error": str(e)}
 
 
+async def trigger_regulatory_full_pull(
+    source: str = "fda",
+    from_date: str = "2022-01-01",
+    to_date: str = "2026-12-31",
+    max_records: int = 10000,
+) -> dict:
+    """Bulk-scrape every FDA warning letter / EudraGMDP statement in the date
+    range into the raw staging table (no per-company filter)."""
+    if VIEW_ONLY:
+        return {"error": "Scraping disabled (view-only mode)."}
+    if source not in ("fda", "eudragmdp", "all"):
+        return {"error": "source must be 'fda', 'eudragmdp', or 'all'"}
+    sources = ["fda", "eudragmdp"] if source == "all" else [source]
+    try:
+        client = await Client.connect(TEMPORAL_HOST)
+        workflow_ids = []
+        for src in sources:
+            workflow_id = f"regulatory-pull-mcp-{src}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+            handle = await client.start_workflow(
+                "RegulatoryFullPullWorkflow",
+                args=[src, from_date, to_date, max_records],
+                id=workflow_id,
+                task_queue="enrichment-task-queue",
+            )
+            workflow_ids.append(handle.id)
+        return {"status": "started", "sources": sources, "workflow_ids": workflow_ids}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+async def get_regulatory_full_pull_status() -> dict:
+    """Poll the running RegulatoryFullPullWorkflow(s): phase, rows, inserted."""
+    if VIEW_ONLY:
+        return {"status": "disabled"}
+    try:
+        client = await Client.connect(TEMPORAL_HOST)
+        running = []
+        async for e in client.list_workflows(
+            query="WorkflowType = 'RegulatoryFullPullWorkflow' AND ExecutionStatus = 'Running'",
+            limit=10,
+        ):
+            try:
+                handle = client.get_workflow_handle(e.id)
+                progress = await handle.query("progress")
+            except Exception:
+                progress = {}
+            running.append({"workflow_id": e.id, **progress})
+        return {"running": running}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+async def check_scraped_records(
+    firm_name: str | None = None,
+    event_id: str | None = None,
+    source: str = "all",
+) -> dict:
+    """Check one company against the scraped staging records: fuzzy-match,
+    fetch letter bodies, classify, and link into regulatory_evidence."""
+    if VIEW_ONLY:
+        return {"error": "Check disabled (view-only mode)."}
+    if source not in ("fda", "eudragmdp", "all"):
+        return {"error": "source must be 'fda', 'eudragmdp', or 'all'"}
+    firm = firm_name
+    if event_id and not firm:
+        db = SessionLocal()
+        try:
+            event = db.query(RegulatoryEvent).filter(
+                RegulatoryEvent.event_id == event_id).first()
+            if not event:
+                return {"error": "Signal event not found"}
+            firm = (event.raw_details or {}).get("manufacturer", "")
+        finally:
+            db.close()
+    if not firm or not _mfr_key(firm):
+        return {"error": "Manufacturer is a placeholder or missing; pass firm_name"}
+
+    sources = ["fda", "eudragmdp"] if source == "all" else [source]
+    try:
+        client = await Client.connect(TEMPORAL_HOST)
+        workflow_ids = []
+        for src in sources:
+            workflow_id = f"regulatory-check-mcp-{src}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+            handle = await client.start_workflow(
+                "ScrapedRecordCheckWorkflow",
+                args=[firm, src],
+                id=workflow_id,
+                task_queue="enrichment-task-queue",
+            )
+            workflow_ids.append(handle.id)
+        return {"status": "started", "firm_name": firm, "workflow_ids": workflow_ids}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+async def get_regulatory_check_status(workflow_id: str) -> dict:
+    """Poll a ScrapedRecordCheckWorkflow (same contract as get_enrichment_status)."""
+    return await get_enrichment_status(workflow_id)
+
+
 async def trigger_web_evidence(event_id: str) -> dict:
     """Start the WebEvidenceWorkflow for a specific record."""
     if VIEW_ONLY:

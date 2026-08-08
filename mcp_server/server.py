@@ -213,6 +213,67 @@ async def trigger_web_evidence(event_id: str) -> str:
     return json.dumps(await scraper.trigger_web_evidence(event_id))
 
 
+# ===== REGULATORY FULL-PULL TOOLS (async) ====================================
+
+@mcp.tool()
+async def trigger_regulatory_full_pull(
+    source: str = "fda",
+    from_date: str = "2022-01-01",
+    to_date: str = "2026-12-31",
+    max_records: int = 10000,
+) -> str:
+    """Bulk-scrape every FDA warning letter / EudraGMDP statement in a date
+    range into the raw staging table — no per-company filter needed.
+
+    Args:
+        source: 'fda', 'eudragmdp', or 'all'
+        from_date: Inclusive start date (YYYY-MM-DD)
+        to_date: Inclusive end date (YYYY-MM-DD)
+        max_records: Cap on rows scraped per source
+    """
+    return json.dumps(await scraper.trigger_regulatory_full_pull(
+        source=source, from_date=from_date, to_date=to_date,
+        max_records=max_records))
+
+
+@mcp.tool()
+async def get_regulatory_full_pull_status() -> str:
+    """Poll the running full-pull workflow(s): phase, rows, inserted."""
+    return json.dumps(await scraper.get_regulatory_full_pull_status())
+
+
+@mcp.tool()
+async def check_scraped_records(
+    firm_name: str = None,
+    event_id: str = None,
+    source: str = "all",
+) -> str:
+    """Check whether we already have scraped regulatory data for a company.
+
+    Fuzzy-matches the firm against the raw staging table, fetches full letter/
+    statement bodies, classifies them, and links matches into regulatory
+    evidence. Use this AFTER trigger_regulatory_full_pull to see if a specific
+    company is covered.
+
+    Args:
+        firm_name: Company to check (e.g. 'Dabur India Ltd')
+        event_id: Alternative — resolve the manufacturer from a CDSCO event
+        source: 'fda', 'eudragmdp', or 'all'
+    """
+    return json.dumps(await scraper.check_scraped_records(
+        firm_name=firm_name, event_id=event_id, source=source))
+
+
+@mcp.tool()
+async def get_regulatory_check_status(workflow_id: str) -> str:
+    """Poll a ScrapedRecordCheckWorkflow started by check_scraped_records.
+
+    Args:
+        workflow_id: The Temporal workflow ID to poll
+    """
+    return json.dumps(await scraper.get_regulatory_check_status(workflow_id))
+
+
 # ===== LLM ANALYSIS TOOLS ====================================================
 
 @mcp.tool()

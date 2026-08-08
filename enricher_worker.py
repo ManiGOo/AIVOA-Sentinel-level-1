@@ -28,6 +28,13 @@ from campaign_tasks import (
     send_message_activity,
     complete_campaign_activity,
 )
+from regulatory_scrape_tasks import (
+    RegulatoryFullPullWorkflow,
+    ScrapedRecordCheckWorkflow,
+    scrape_regulatory_records,
+    save_scraped_records,
+    link_scraped_records_for_firm,
+)
 
 
 async def main():
@@ -36,7 +43,8 @@ async def main():
     worker = Worker(
         client,
         task_queue="enrichment-task-queue",
-        workflows=[EnrichmentWorkflow, WebEvidenceWorkflow, LeadResearchWorkflow, CampaignWorkflow],
+        workflows=[EnrichmentWorkflow, WebEvidenceWorkflow, LeadResearchWorkflow, CampaignWorkflow,
+                   RegulatoryFullPullWorkflow, ScrapedRecordCheckWorkflow],
         activities=[
             fetch_external_evidence,
             generate_queries_activity,
@@ -52,6 +60,9 @@ async def main():
             generate_lead_messages_activity,
             send_message_activity,
             complete_campaign_activity,
+            scrape_regulatory_records,
+            save_scraped_records,
+            link_scraped_records_for_firm,
         ],
         activity_executor=ThreadPoolExecutor(max_workers=20),
     )
