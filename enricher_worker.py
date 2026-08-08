@@ -14,9 +14,10 @@ from web_evidence_tasks import (
 )
 from lead_research_tasks import (
     LeadResearchWorkflow,
-    search_lead_web_activity,
-    extract_lead_details_activity,
-    save_lead_research_activity,
+    search_company_profile_activity,
+    search_decision_makers_activity,
+    search_intent_signals_activity,
+    evaluate_and_save_lead_activity,
     mark_lead_failed_activity,
 )
 
@@ -33,9 +34,10 @@ async def main():
             generate_queries_activity,
             search_web_for_queries,
             fetch_and_classify_articles,
-            search_lead_web_activity,
-            extract_lead_details_activity,
-            save_lead_research_activity,
+            search_company_profile_activity,
+            search_decision_makers_activity,
+            search_intent_signals_activity,
+            evaluate_and_save_lead_activity,
             mark_lead_failed_activity,
         ],
         activity_executor=ThreadPoolExecutor(max_workers=20),

@@ -103,16 +103,21 @@ class WebEvidence(Base):
 
 
 class CompanyLead(Base):
-    """Lead research outcome for one company: website, LinkedIn page and
-    hiring signal (current job postings + hiring-news mentions)."""
+    """Lead research outcome for one company: firmographic profile, decision
+    makers, activity signals and QMS-relevant trigger events."""
     __tablename__ = 'company_leads'
 
     company_key = Column(String(255), primary_key=True)
     company_name = Column(Text, default='')
     website = Column(Text, default='')
     linkedin_url = Column(Text, default='')
-    hiring = Column(JSONB, default=list)          # [{title, location, posted, url}]
-    hiring_news = Column(JSONB, default=list)     # [{title, url, source, snippet, date}]
+    company_status = Column(String(20), default='unknown')  # active | dormant | unknown
+    decision_makers = Column(JSONB, default=list)  # [{name, role, role_type, linkedin_url, email}]
+    intent_signals = Column(JSONB, default=list)   # [{category, title, url, snippet, date, relevance_score}]
+    trigger_events = Column(JSONB, default=list)   # [{category, title, url, snippet, date, relevance_score}]
+    activity_summary = Column(Text, default='')    # LLM-generated narrative
+    hiring = Column(JSONB, default=list)          # [{title, location, posted, url, relevance_score}]
+    hiring_news = Column(JSONB, default=list)     # [{title, url, source, snippet, date, relevance_score}]
     summary = Column(JSONB, default=dict)         # raw research/notes
     status = Column(String(20), default='not_started')  # not_started | running | completed | failed
     error = Column(Text, default='')

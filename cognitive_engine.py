@@ -589,3 +589,231 @@ def classify_web_evidence(article_text: str, record_details: dict) -> dict:
 
     return _heuristic_web_classification(article_text, record_details)
 
+
+# =============================================================================
+# Lead search — agentic relevance checker
+# =============================================================================
+
+_LEAD_CATEGORY_RULES = {
+    "website": (
+        "Relevant if the URL plausibly is or points to the company's own official "
+        "corporate domain. Reject pure directories/aggregators (indiamart, "
+        "zaubacorp, tofler, tracxn, crediwatch, economictimes, moneycontrol, "
+        "bloomberg, crunchbase, opencorporates, etc.), social pages, and "
+        "marketplace listings. A company blog or subsidiary page is relevant."
+    ),
+    "linkedin": (
+        "Relevant if the URL is the company's own LinkedIn company page "
+        "(linkedin.com/company/...) OR a key person's LinkedIn profile clearly "
+        "working at this company. Reject articles and LinkedIn pages of other "
+        "companies."
+    ),
+    "hiring": (
+        "Relevant if the result is a genuine job posting, careers page, or "
+        "hiring/expansion/headcount news about THIS company. Company profiles, "
+        "product lists, financial reports, and generic pages that merely mention "
+        "the company name without hiring signal are NOT relevant."
+    ),
+    "status": (
+        "Relevant if the result indicates whether the company is actively "
+        "manufacturing, growing, or operating (news, filings, regulatory "
+        "actions, product launches). Outdated or purely historical pages are "
+        "less relevant."
+    ),
+    "decision_maker": (
+        "Relevant if the result is a LinkedIn profile or company page naming a "
+        "real person who works or worked at THIS company in a quality, QA, "
+        "production, management, or leadership role. Reject generic directory "
+        "listings, fake profiles, and people at other companies."
+    ),
+    "news": (
+        "Relevant if the result is a recent news article about the company's "
+        "operations, growth, expansion, or regulatory events. Reject generic "
+        "press-release wires and articles that only mention the company in passing."
+    ),
+    "triggers": (
+        "Relevant if the result describes a quality/regulatory event for this "
+        "company: NSQ/substandard drug alerts, warning letters, recalls, CAPA, "
+        "inspection findings, or documentation/paper-QMS issues. Reject articles "
+        "about other companies."
+    ),
+}
+
+
+def _lead_company_tokens(company_name: str) -> set:
+    cleaned = clean_company_name(PAREN.sub("", company_name or ""))
+    return {w for w in re.findall(r"[a-z0-9]+", cleaned.lower()) if len(w) >= 4}
+
+
+def _fuzzy_company_match(company_name: str, text: str) -> bool:
+    """Lenient company-name matching that handles variants like
+    "Pharmaceuticals" vs "Pharma" vs "Bioceuticals", "Pvt Ltd" vs "Private Limited"."""
+    if not text:
+        return False
+    cleaned = clean_company_name(PAREN.sub("", company_name or "")).lower()
+    text_lower = text.lower()
+    # Exact cleaned name match
+    if cleaned and cleaned in text_lower:
+        return True
+    # Token overlap
+    name_tokens = _lead_company_tokens(company_name)
+    if not name_tokens:
+        return False
+    text_tokens = set(re.findall(r"[a-z0-9]+", text_lower))
+    # Check distinctive token overlap (exclude generic pharma words)
+    generic = {"pharmaceutical", "pharmaceuticals", "pharma", "private", "limited",
+               "pvt", "ltd", "company", "india", "bioceuticals", "biotech", "lifesciences"}
+    distinctive = name_tokens - generic
+    if distinctive and len(distinctive & text_tokens) >= 1:
+        return True
+    # Even with only generic tokens, require strong overlap
+    if len(name_tokens) >= 2 and len(name_tokens & text_tokens) >= max(1, len(name_tokens) // 2):
+        return True
+    return False
+
+
+def _heuristic_lead_relevance(company_name: str, result: dict, category: str) -> dict:
+    """Deterministic fallback when the LLM classifier is unavailable."""
+    text = result.get("title", "") + " " + result.get("snippet", "") + " " + result.get("url", "")
+    company_match = _fuzzy_company_match(company_name, text)
+    hay = text.lower()
+
+    if category == "hiring":
+        hiring_kw = (
+            "job", "jobs", "career", "careers", "hiring", "vacancy", "vacancies",
+            "opening", "openings", "recruit", "recruitment", "join us", "work with us",
+            "positions", "apply now", "we're hiring", "we are hiring", "headcount",
+            "expansion", "new hires", "hired",
+        )
+        category_match = any(k in hay for k in hiring_kw)
+    elif category == "website":
+        bad_hosts = (
+            "indiamart", "zaubacorp", "tofler", "tracxn", "crediwatch", "1mg",
+            "economictimes", "moneycontrol", "bloomberg", "crunchbase",
+            "opencorporates", "linkedin", "facebook", "twitter", "instagram",
+            "glassdoor", "indeed", "naukri", "sulekha", "justdial", "tradeindia",
+        )
+        category_match = not any(h in hay for h in bad_hosts)
+    elif category == "linkedin":
+        category_match = "linkedin.com/company/" in result.get("url", "").lower()
+    else:
+        category_match = company_match
+
+    if not company_match:
+        score = 0
+    elif category_match:
+        score = 75
+    else:
+        score = 30
+    return {
+        "relevance_score": score,
+        "is_relevant": score >= 50,
+        "company_match": company_match,
+        "category_match": category_match,
+        "reason": "Heuristic (LLM unavailable): token/category match.",
+        "heuristic": True,
+    }
+
+
+def classify_lead_relevance_batch(company_name: str, results: list, category: str) -> list:
+    """LLM-based relevance classifier for lead search results.
+
+    Scores each result for whether it is genuinely about the target company AND
+    genuinely matches its category tag (website / linkedin / hiring). Returns a
+    list of dicts aligned 1:1 with ``results``, each with:
+    relevance_score (0-100), is_relevant, company_match, category_match, reason.
+    """
+    if not results:
+        return []
+
+    if not GROQ_API_KEY.startswith("gsk_"):
+        return [_heuristic_lead_relevance(company_name, r, category) for r in results]
+
+    rule = _LEAD_CATEGORY_RULES.get(category, "")
+    cleaned_name = clean_company_name(PAREN.sub("", company_name or ""))
+    # Build a short list of name variants to help the LLM with fuzzy matching.
+    name_words = [w for w in cleaned_name.split() if len(w) >= 4]
+    items_text = ""
+    for i, r in enumerate(results, 1):
+        items_text += f"\n--- Result {i} ---\n"
+        items_text += f"Title: {r.get('title', '')}\n"
+        items_text += f"URL: {r.get('url', '')}\n"
+        items_text += f"Snippet: {r.get('snippet', '')}\n"
+
+    prompt = f"""
+You are a sales-intelligence relevance judge. A web search for the company
+below returned the snippets that follow. For EACH result, decide whether it is
+genuinely about THIS company or a closely related entity (subsidiary, group
+company, brand variant) and genuinely matches its category tag.
+
+Target company: {company_name}
+(cleaned name: {cleaned_name}; key name words: {name_words})
+Category tag: {category}
+Rule for this category: {rule}
+
+Guidelines:
+- Company names often vary (e.g. "Pharmaceuticals" vs "Pharma" vs "Bioceuticals",
+  "Pvt Ltd" vs "Private Limited", abbreviations). Treat close variants of the
+  target company as a MATCH, not a different company. Score 60-100 when the
+  result is clearly about the target or its group entity.
+- Only score 0-10 when the result is about a COMPLETELY different company.
+- For "decision_maker": a LinkedIn profile of a person who works/worked at this
+  company (any role) is relevant. Prefer QA/quality/production/management roles
+  but accept any real employee.
+- For "hiring": only real job postings, careers pages, or hiring/expansion news
+  count. Company profiles and product lists do NOT count.
+- For "website": the company's own corporate domain counts. Directories,
+  aggregators, marketplaces and social pages do NOT count.
+- For "linkedin": the company page OR a key employee's profile counts.
+
+Results:{items_text}
+
+Respond ONLY with a valid JSON object using this exact shape:
+{{"results": [
+  {{"relevance_score": integer 0-100, "is_relevant": boolean, "company_match": boolean,
+    "category_match": boolean, "reason": "one-sentence explanation"}}
+]}}
+The "results" array MUST have exactly {len(results)} entries, one per result,
+in the same order.
+"""
+    # Pre-classify with fuzzy name matching so the LLM isn't the only gate.
+    pre = [_fuzzy_company_match(company_name, r.get("title", "") + " " + r.get("snippet", ""))
+           for r in results]
+    try:
+        completion = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[
+                {"role": "system", "content": "You output strict JSON."},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.0,
+            max_tokens=2048,
+        )
+        data = json.loads(completion.choices[0].message.content)
+        out = data.get("results", [])
+    except Exception as e:
+        print(f"Groq lead relevance batch error: {e}")
+        out = []
+
+    # Align 1:1 with input, merge LLM + fuzzy scores
+    aligned = []
+    for i, r in enumerate(results):
+        item = {}
+        if i < len(out) and isinstance(out[i], dict) and "relevance_score" in out[i]:
+            item = out[i]
+        else:
+            item = _heuristic_lead_relevance(company_name, r, category)
+        # Boost: if fuzzy name match says yes but LLM scored low, raise floor
+        llm_score = item.get("relevance_score") or 0
+        if pre[i] and llm_score < 50:
+            item["relevance_score"] = max(llm_score, 55)
+            item["company_match"] = True
+            item.setdefault("reason", "")
+            item["reason"] = "Fuzzy name match (" + item["reason"][:80]
+        item.setdefault("is_relevant", (item.get("relevance_score") or 0) >= 50)
+        item.setdefault("company_match", item["is_relevant"])
+        item.setdefault("category_match", item["is_relevant"])
+        aligned.append(item)
+    return aligned
+

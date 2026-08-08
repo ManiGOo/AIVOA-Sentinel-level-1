@@ -10,40 +10,18 @@ with workflow.unsafe.imports_passed_through():
     from tavily import TavilyClient
     from db_setup import SessionLocal, CompanyLead
     from company_names import clean_company_name, PAREN
-    from cognitive_engine import client as groq_client, GROQ_API_KEY
+    from cognitive_engine import (
+        client as groq_client,
+        GROQ_API_KEY,
+        classify_lead_relevance_batch,
+        _fuzzy_company_match,
+    )
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
 
 _LINKEDIN_DOMAINS = ["linkedin.com"]
-
-def _build_queries(company_name: str) -> list:
-    """Deterministic, category-tagged search queries for one company."""
-    name = company_name.strip() or "company"
-    q = name.replace('"', '').strip()
-    return [
-        {"category": "website", "query": f'"{q}" official website'},
-        {"category": "website", "query": f'"{q}" company pharmaceutical'},
-        {"category": "website", "query": f'"{q}" official site'},
-        {"category": "linkedin", "query": f'"{q}" linkedin company page'},
-        {"category": "linkedin", "query": f'"{q}" linkedin'},
-        {"category": "hiring", "query": f'"{q}" careers job openings'},
-        {"category": "hiring", "query": f'"{q}" hiring new jobs'},
-        {"category": "hiring", "query": f'"{q}" jobs openings'},
-        {"category": "hiring", "query": f'"{q}" hiring news growth headcount'},
-    ]
-
-def _company_tokens(company_name: str) -> set:
-    tokens = set()
-    cleaned = clean_company_name(PAREN.sub("", company_name or ""))
-    for w in re.findall(r"[a-z0-9]+", cleaned.lower()):
-        if len(w) >= 4:
-            tokens.add(w)
-    return tokens
-
-def _is_relevant(company_name: str, title: str, snippet: str) -> bool:
-    tokens = _company_tokens(company_name)
-    if not tokens:
-        return True
-    hay = (title + " " + snippet).lower()
-    return any(t in hay for t in tokens)
 
 _DIRECTORY_HOSTS = (
     "indiamart.com", "justdial", "sulekha", "tradeindia", "yellowpages",
@@ -53,73 +31,38 @@ _DIRECTORY_HOSTS = (
     "thecompanycheck", "quickcompany", "corporationwiki", "buzzfile",
     "moneycontrol", "bloomberg", "dnb.com", "kompass",
     "facebook.com", "twitter.com", "x.com", "instagram.com", "youtube.com",
-    "linkedin.com", "glassdoor.com", "indeed.com", "naukri.com",
-    "timesjobs.com", "zoominfo",
+    "glassdoor.com", "indeed.com", "naukri.com", "timesjobs.com", "zoominfo",
 )
 
-_STRONG_STOPWORDS = {
-    "pvt", "ltd", "limited", "private", "inc", "company", "co", "corp",
-    "corporation", "group", "industries", "industry", "enterprises",
-    "enterprise", "solutions", "services", "international", "global",
-    "india", "biotech", "biotechnology", "pharma", "pharmaceutical",
-    "pharmaceuticals", "laboratories", "laboratory", "labs", "life",
-    "sciences", "science", "health", "healthcare", "medical", "medicals",
-    "pharmacy", "drugs", "drug", "chemical", "chemicals", "technologies",
-    "technology", "systems", "products",
-}
+def _company_tokens(company_name: str) -> set:
+    cleaned = clean_company_name(PAREN.sub("", company_name or ""))
+    return {w for w in re.findall(r"[a-z0-9]+", cleaned.lower()) if len(w) >= 4}
 
-def _strong_tokens(company_name: str) -> set:
-    return {t for t in _company_tokens(company_name) if t not in _STRONG_STOPWORDS}
-
-_NEWS_PATH_RE = re.compile(r"/(?:19|20)\d{2}/\d{1,2}/")
-_DIRECTORY_PATH_SEGS = ("directory", "listing", "company-profile", "company_profile", "profile", "company/")
-_CIN_RE = re.compile(r"[A-Z0-9]{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}")
 
 def _is_clean_host(url: str) -> bool:
     host = url.split("/")[2] if "//" in url else ""
-    if not host or any(d in host.lower() for d in _DIRECTORY_HOSTS):
-        return False
-    if _NEWS_PATH_RE.search(url):
-        return False
-    path = ""
-    if "//" in url:
-        after_host = url.split("//", 1)[1]
-        if "/" in after_host:
-            path = after_host.split("/", 1)[1]
-    if any(s in path.lower() for s in _DIRECTORY_PATH_SEGS):
-        return False
-    if _CIN_RE.search(path.upper()):
-        return False
-    return True
+    return not host or not any(d in host.lower() for d in _DIRECTORY_HOSTS)
+
 
 def _website_plausible(url: str, company_name: str) -> bool:
-    """A candidate website must be a clean host AND match the company name:
-    a distinctive token when available, otherwise a meaningful shared
-    substring (rejects wrong-company directory pages)."""
     if not _is_clean_host(url):
         return False
-    strong = _strong_tokens(company_name)
-    if strong:
-        return any(t in url.lower() for t in strong)
+    tokens = {t for t in _company_tokens(company_name) if len(t) >= 5}
+    if tokens:
+        return any(t in url.lower() for t in tokens)
     clean = re.sub(r"[^a-z0-9]", "", company_name.lower())
-    return _meaningful_shared(_lcs(_url_key(url), clean))
+    return len(clean) >= 5 and clean in re.sub(r"[^a-z0-9]", "", url.lower())
+
 
 def _pick_best_website(items: list, company_name: str) -> str:
-    """Prefer a non-social, non-directory official-looking URL. Directory and
-    aggregator pages are never returned as the company website. For generic
-    names (no distinctive tokens) a URL is only accepted if it shares a
-    meaningful substring with the company name, so wrong-company directory
-    pages are not guessed."""
-    strong = _strong_tokens(company_name)
     for it in items:
         url = it.get("url", "")
         if _website_plausible(url, company_name):
             return url
-    if strong:
-        for it in items:
-            url = it.get("url", "")
-            if _is_clean_host(url):
-                return url
+    for it in items:
+        url = it.get("url", "")
+        if _is_clean_host(url):
+            return url
     return ""
 
 
@@ -127,313 +70,414 @@ def _linkedin_slug(url: str) -> str:
     low = url.lower().rstrip("/")
     return low.split("linkedin.com/", 1)[-1] if "linkedin.com" in low else ""
 
-def _lcs(a: str, b: str) -> str:
-    """Longest common substring between two short strings."""
-    if not a or not b:
-        return ""
-    best = ""
-    for i in range(len(a)):
-        for j in range(len(b)):
-            k = 0
-            while i + k < len(a) and j + k < len(b) and a[i + k] == b[j + k]:
-                k += 1
-            if k > len(best):
-                best = a[i:i + k]
-    return best
-
-def _meaningful_shared(shared: str) -> bool:
-    """True if the shared substring is long enough and retains non-generic
-    content after stripping industry stopwords (e.g. "biotechpvtltd" -> "")."""
-    if len(shared) < 6:
-        return False
-    residue = shared
-    for sw in _STRONG_STOPWORDS:
-        residue = residue.replace(sw, "")
-    return len(residue) >= 2
-
-def _url_key(url: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", (url.split("//", 1)[-1] if "//" in url else url).lower())
 
 def _pick_linkedin(items: list, company_name: str) -> str:
-    """Pick the company's LinkedIn page from search results. Prefer a URL whose
-    slug carries a distinctive (non-generic) company token; otherwise fall back
-    to the longest meaningful shared-substring with the company name. Never
-    guess a random /company/ or employee page."""
-    strong = _strong_tokens(company_name)
-    clean = re.sub(r"[^a-z0-9]", "", company_name.lower())
-
-    scored = []
+    tokens = {t for t in _company_tokens(company_name) if len(t) >= 5}
+    # Prefer company page with a name-matching slug
     for it in items:
         url = it.get("url", "")
         slug = _linkedin_slug(url)
-        if not slug or any(m in slug for m in ("/posts/", "/jobs/", "/feed")):
+        if not slug or "linkedin.com/company/" not in url.lower():
             continue
-        score = 0
-        if strong:
-            score += sum(2 for t in strong if t in slug)
-        shared = _lcs(slug, clean)
-        if _meaningful_shared(shared):
-            score += len(shared)
-        if score > 0:
-            scored.append((score, slug.startswith("company/"), url))
-
-    if scored:
-        scored.sort(key=lambda x: (-x[0], not x[1]))
-        return scored[0][2]
+        if tokens and any(t in slug for t in tokens):
+            return url
+    # Any company page
+    for it in items:
+        url = it.get("url", "")
+        if "linkedin.com/company/" in url.lower():
+            return url
+    # Fuzzy match on title for a company page
+    for it in items:
+        url = it.get("url", "")
+        if "linkedin.com/company/" in url.lower() and _fuzzy_company_match(company_name, it.get("title", "")):
+            return url
     return ""
 
 
-_JOB_HOST_HINTS = (
-    "indeed", "workindia", "naukri", "timesjobs", "glassdoor", "monster",
-    "linkedin.com/jobs", "shine", "apna.co", "hire", "talent", "jobs",
-    "careers", "career",
-)
+# ---------------------------------------------------------------------------
+# Generic agentic search + relevance classify
+# ---------------------------------------------------------------------------
 
+def _search_and_classify(company_name: str, queries: list, category: str,
+                         max_results: int = 8, threshold: int = 25) -> list:
+    """Search Tavily for each query, classify relevance, return scored items.
 
-def _fallback_hirings(items: list) -> list:
-    out = []
-    for it in items[:10]:
-        url = it.get("url", "").lower()
-        if any(h in url for h in _JOB_HOST_HINTS):
-            out.append({
-                "title": (it.get("title", "") or "").strip() or "Job opening",
-                "location": "",
-                "posted": "",
-                "url": it.get("url", ""),
-            })
-    return out[:10]
-
-
-def _fallback_hiring_news(items: list) -> list:
-    out = []
-    for it in items[:8]:
-        url = it.get("url", "").lower()
-        if any(h in url for h in _JOB_HOST_HINTS):
+    Uses deterministic heuristic as the primary classifier (consistent) and the
+    LLM as a secondary signal. This avoids the non-determinism of relying on
+    the LLM alone."""
+    api_key = os.getenv("TAVILY_API_KEY")
+    if not api_key:
+        return []
+    tavily = TavilyClient(api_key=api_key)
+    seen = set()
+    collected = []
+    for spec in queries:
+        query = spec if isinstance(spec, str) else spec.get("query", "")
+        if not query:
             continue
-        out.append({
-            "title": it.get("title", ""),
-            "url": it.get("url", ""),
-            "source": it.get("source", ""),
-            "snippet": it.get("snippet", ""),
-            "date": "",
-        })
-    return out[:8]
+        kwargs = dict(query=query, search_depth="advanced",
+                      max_results=max_results, include_raw_content=False)
+        try:
+            response = tavily.search(**kwargs)
+        except Exception as e:
+            print(f"Tavily search error for '{query}': {e}")
+            continue
+        for result in response.get("results", []):
+            url = result.get("url")
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            collected.append({
+                "title": result.get("title", ""),
+                "url": url,
+                "snippet": result.get("content", ""),
+                "source": url.split("/")[2] if "//" in url else "",
+            })
+    if not collected:
+        return []
+    # Primary: deterministic heuristic (consistent)
+    from cognitive_engine import _heuristic_lead_relevance, _fuzzy_company_match as _fuzzy
+    heuristic_scores = [_heuristic_lead_relevance(company_name, r, category) for r in collected]
+    # Secondary: LLM for category matching signal (best-effort)
+    try:
+        llm_scores = classify_lead_relevance_batch(company_name, collected, category)
+    except Exception:
+        llm_scores = [{}] * len(collected)
+    out = []
+    for item, hscore, lscore in zip(collected, heuristic_scores, llm_scores):
+        h = hscore.get("relevance_score") or 0
+        l = lscore.get("relevance_score") or 0
+        # Combine: take the max of heuristic and LLM, with fuzzy boost
+        fuzzy = _fuzzy(company_name, item.get("title", "") + " " + item.get("snippet", ""))
+        if fuzzy:
+            score = max(h, l, 50)
+        else:
+            score = max(h, l)
+        item["relevance_score"] = score
+        item["relevance_reason"] = lscore.get("reason", "") or hscore.get("reason", "")
+        if score >= threshold:
+            out.append(item)
+    out.sort(key=lambda x: x.get("relevance_score") or 0, reverse=True)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Activity 1: Company profile (website, LinkedIn, status)
+# ---------------------------------------------------------------------------
+
+def _profile_queries(company_name: str) -> dict:
+    q = company_name.strip().replace('"', '')
+    return {
+        "website": [
+            f'"{q}" official website',
+            f'"{q}" pharmaceutical company',
+        ],
+        "linkedin": [
+            f'"{q}" linkedin company page',
+        ],
+        "status": [
+            f'"{q}" pharmaceutical company active manufacturing',
+            f'"{q}" company news 2025 2026',
+        ],
+    }
+
 
 @activity.defn
-async def search_lead_web_activity(company_name: str) -> dict:
-    """Search Tavily for website / LinkedIn / hiring info on a company and
-    return category-tagged, relevance-gated results. Blocking API calls run in
-    a thread so they cannot freeze the worker event loop."""
-
+async def search_company_profile_activity(company_name: str) -> dict:
     def _work() -> dict:
-        api_key = os.getenv("TAVILY_API_KEY")
-        if not api_key:
-            print("Warning: TAVILY_API_KEY not set")
-            return {"company_name": company_name, "website": [], "linkedin": [], "hiring": []}
-
-        tavily = TavilyClient(api_key=api_key)
-        by_cat = {"website": [], "linkedin": [], "hiring": []}
-        seen = set()
-
-        for spec in _build_queries(company_name):
-            cat = spec["category"]
-            kwargs = dict(
-                query=spec["query"],
-                search_depth="advanced",
-                max_results=8,
-                include_raw_content=False,
-            )
-            if cat == "linkedin":
-                kwargs["include_domains"] = _LINKEDIN_DOMAINS
-            try:
-                response = tavily.search(**kwargs)
-            except Exception as e:
-                print(f"Tavily search error for '{spec['query']}': {e}")
-                continue
-
-            for result in response.get("results", []):
-                url = result.get("url")
-                if not url or url in seen:
-                    continue
-                title = result.get("title", "")
-                snippet = result.get("content", "")
-                if not _is_relevant(company_name, title, snippet):
-                    continue
-                seen.add(url)
-                item = {
-                    "title": title,
-                    "url": url,
-                    "snippet": snippet,
-                    "source": url.split("/")[2] if "//" in url else "",
-                }
-                by_cat[cat].append(item)
-
-        return {"company_name": company_name, **by_cat}
-
+        queries = _profile_queries(company_name)
+        website_items = _search_and_classify(company_name, queries["website"], "website", threshold=30)
+        linkedin_items = _search_and_classify(company_name, queries["linkedin"], "linkedin", threshold=30)
+        status_items = _search_and_classify(company_name, queries["status"], "status", threshold=25)
+        return {
+            "company_name": company_name,
+            "website_candidates": website_items,
+            "linkedin_candidates": linkedin_items,
+            "status_candidates": status_items,
+        }
     return await asyncio.to_thread(_work)
 
-def _groq_extract(company_name: str, data: dict) -> dict:
-    """Ask Groq to structure website/LinkedIn/hiring from the raw search."""
+
+# ---------------------------------------------------------------------------
+# Activity 2: Decision makers (QA head / MD / key people + email)
+# ---------------------------------------------------------------------------
+
+def _decision_maker_queries(company_name: str) -> list:
+    q = company_name.strip().replace('"', '')
+    return [
+        f'"{q}" "QA head" OR "quality assurance head" OR "quality head" linkedin',
+        f'"{q}" "QA manager" OR "quality manager" OR "quality control" linkedin',
+        f'"{q}" "managing director" OR "founder" OR "CEO" linkedin',
+        f'"{q}" "plant head" OR "production head" linkedin',
+        f'"{q}" email contact',
+        f'"{q}" team members quality',
+    ]
+
+
+@activity.defn
+async def search_decision_makers_activity(company_name: str) -> dict:
+    def _work() -> dict:
+        items = _search_and_classify(company_name, _decision_maker_queries(company_name),
+                                     "decision_maker", threshold=30, max_results=10)
+        return {"company_name": company_name, "people_candidates": items}
+    return await asyncio.to_thread(_work)
+
+
+# ---------------------------------------------------------------------------
+# Activity 3: Intent signals (hiring, news, QMS triggers)
+# ---------------------------------------------------------------------------
+
+def _intent_queries(company_name: str) -> dict:
+    q = company_name.strip().replace('"', '')
+    return {
+        "hiring": [
+            f'"{q}" hiring jobs careers 2025 2026',
+            f'"{q}" "now hiring" OR "walk in" OR job opening',
+            f'"{q}" QA quality hiring',
+        ],
+        "news": [
+            f'"{q}" news expansion investment 2025 2026',
+            f'"{q}" new facility OR plant OR manufacturing',
+        ],
+        "triggers": [
+            f'"{q}" NSQ OR "not of standard quality" OR substandard',
+            f'"{q}" warning letter OR FDA OR "regulatory action"',
+            f'"{q}" recall OR CAPA OR deviation OR inspection',
+            f'"{q}" "paper QMS" OR "manual records" OR documentation',
+        ],
+    }
+
+
+@activity.defn
+async def search_intent_signals_activity(company_name: str) -> dict:
+    def _work() -> dict:
+        queries = _intent_queries(company_name)
+        return {
+            "company_name": company_name,
+            "hiring_candidates": _search_and_classify(company_name, queries["hiring"], "hiring", threshold=35),
+            "news_candidates": _search_and_classify(company_name, queries["news"], "news", threshold=25),
+            "trigger_candidates": _search_and_classify(company_name, queries["triggers"], "triggers", threshold=30),
+        }
+    return await asyncio.to_thread(_work)
+
+
+# ---------------------------------------------------------------------------
+# Activity 4: Evaluate + save (LLM structures the final lead record)
+# ---------------------------------------------------------------------------
+
+def _evaluate_lead(company_name: str, profile: dict, people: dict, signals: dict) -> dict:
+    """Structure raw search results into the final lead record.
+
+    Uses a deterministic heuristic for the structured fields (website, LinkedIn,
+    decision makers, signals) and a short LLM call ONLY for the narrative summary.
+    This avoids the unreliability of asking one giant prompt to do everything."""
+    base = _heuristic_evaluate(company_name, profile, people, signals)
+    summary = _llm_summary(company_name, profile, people, signals, base)
+    if summary:
+        base["activity_summary"] = summary
+    return base
+
+
+def _llm_summary(company_name: str, profile: dict, people: dict, signals: dict, base: dict) -> str:
+    """Short LLM call for the narrative activity summary only."""
     if not GROQ_API_KEY.startswith("gsk_"):
-        return {}
-
-    compact = {k: v[:8] for k, v in data.items()}
-    prompt = f"""
-    You are a sales-intelligence researcher. From the raw web search results for
-    company "{company_name}", extract:
-    - website: the company's official website URL. Prefer a real corporate
-      domain; SKIP aggregators/directories (indiamart, zaubacorp, tofler,
-      traxn, crediwatch, facebook, social profiles). Empty string only if no
-      plausible official site exists.
-    - linkedin_url: the company's own LinkedIn page. Note: small companies
-      often use an "/in/" profile-style URL whose slug contains the company
-      name (e.g. /in/saintlife-pharamceuticals-ltd-587961226). Prefer a
-      LinkedIn URL whose slug matches the company name over random employee
-      profiles. Empty string only if no company LinkedIn page exists.
-    - hirings: a list of current job openings {{title, location, posted, url}}
-      found in the results (job boards like indeed/workindia, LinkedIn jobs,
-      or the company careers page). Use the snippet date like "3 weeks ago"
-      for posted when available.
-    - hiring_news: a list of recent hiring/expansion news mentions
-      {{title, url, source, snippet, date}} (headcount growth, new facility,
-      expansions, key hires). Include ONLY genuinely hiring-related items.
-    - hiring_headline: a one-line summary of the company's hiring momentum, or
-      "" if unclear.
-
-    Results to analyze:
-    {json.dumps(compact, indent=1)[:12000]}
-
-    Respond ONLY with valid JSON:
-    {{"website": "", "linkedin_url": "", "hirings": [], "hiring_news": [],
-      "hiring_headline": ""}}
-    """
+        return ""
+    decision_makers = base.get("decision_makers", [])
+    dm_names = ", ".join(d.get("name", d.get("role", "?")) for d in decision_makers[:3])
+    trigger_count = len(base.get("trigger_events", []))
+    hiring_count = len([s for s in base.get("intent_signals", []) if s.get("category") == "hiring"])
+    prompt = f"""Company: {company_name}
+Status: {base.get("company_status", "unknown")}
+Key people: {dm_names or "none found"}
+Active job postings: {hiring_count}
+QMS trigger events (NSQ/recall/warning): {trigger_count}
+Website: {base.get("website", "")}
+Write 2 sentences: is this pharma company active right now, and why might they need QMS software? Plain text, no JSON."""
     try:
         completion = groq_client.chat.completions.create(
             model="openai/gpt-oss-120b",
             messages=[
-                {"role": "system", "content": "You output strict JSON."},
+                {"role": "system", "content": "You write concise sales-intelligence notes."},
                 {"role": "user", "content": prompt},
             ],
-            response_format={"type": "json_object"},
-            temperature=0.2,
-            max_tokens=1200,
+            temperature=0.3,
+            max_tokens=200,
         )
-        return json.loads(completion.choices[0].message.content)
+        return (completion.choices[0].message.content or "").strip()
     except Exception as e:
-        print(f"Groq lead extraction error: {e}")
-        return {}
+        print(f"Groq summary error: {e}")
+        return ""
 
-def _tavily_extract(urls: list) -> dict:
-    api_key = os.getenv("TAVILY_API_KEY")
-    if not api_key or not urls:
-        return {}
-    try:
-        tavily = TavilyClient(api_key=api_key)
-        resp = tavily.extract(urls=urls)
-        out = {}
-        for r in resp.get("results") or []:
-            url = r.get("url")
-            raw = (r.get("raw_content") or "").strip()
-            if url and raw:
-                out[url] = raw[:6000]
-        return out
-    except Exception as e:
-        print(f"Tavily extract error: {e}")
-        return {}
+
+def _heuristic_evaluate(company_name: str, profile: dict, people: dict, signals: dict) -> dict:
+    """Deterministic structuring of search results into the lead record."""
+    website = _pick_best_website(profile.get("website_candidates", [])[:8], company_name)
+    linkedin = _pick_linkedin(profile.get("linkedin_candidates", [])[:6], company_name)
+
+    status_items = profile.get("status_candidates", [])
+    company_status = "active" if status_items else "unknown"
+
+    people_items = sorted(
+        people.get("people_candidates", []),
+        key=lambda x: x.get("relevance_score") or 0, reverse=True,
+    )
+    company_tokens = _company_tokens(company_name)
+    decision_makers = []
+    seen_names = set()
+    for it in people_items:
+        raw_name = it.get("title", "").split("|")[0].split("-")[0].split("·")[0].strip()
+        name = re.sub(r"\s+", " ", raw_name).strip()
+        if not name or len(name) < 3 or name.lower() in seen_names:
+            continue
+        # Skip generic job listings (e.g. "1,000+ Quality Manager jobs")
+        if re.match(r"^\d", name) or "jobs in" in name.lower() or "hiring" == name.lower():
+            continue
+        hay = (it.get("title", "") + " " + it.get("snippet", "")).lower()
+        # Verify the person actually works at the target company (fuzzy match)
+        works_here = _fuzzy_company_match(company_name, it.get("title", "") + " " + it.get("snippet", ""))
+        if not works_here:
+            continue
+        role_type = "other"
+        if any(k in hay for k in ("qa head", "qa manager", "quality assurance head", "quality manager", "quality control manager")):
+            role_type = "qa_head"
+        elif any(k in hay for k in ("qa", "quality assurance", "quality control", "quality officer")):
+            role_type = "qa_manager"
+        elif any(k in hay for k in ("managing director",)):
+            role_type = "managing_director"
+        elif any(k in hay for k in ("founder", "ceo ", "chief executive", " co-founder")):
+            role_type = "founder_ceo"
+        elif any(k in hay for k in ("plant head", "production head", "production manager")):
+            role_type = "plant_head"
+        linkedin_url = it.get("url", "") if "linkedin.com" in it.get("url", "") else ""
+        decision_makers.append({
+            "name": name,
+            "role": it.get("title", "").strip(),
+            "role_type": role_type,
+            "linkedin_url": linkedin_url,
+            "email": "",
+        })
+        seen_names.add(name.lower())
+        if len(decision_makers) >= 5:
+            break
+
+    intent_signals = []
+    for it in signals.get("hiring_candidates", [])[:4]:
+        intent_signals.append({**it, "category": "hiring"})
+    for it in signals.get("news_candidates", [])[:3]:
+        intent_signals.append({**it, "category": "expansion"})
+    intent_signals.sort(key=lambda x: x.get("relevance_score") or 0, reverse=True)
+
+    trigger_events = []
+    for it in signals.get("trigger_candidates", [])[:5]:
+        hay = (it.get("title", "") + " " + it.get("snippet", "")).lower()
+        cat = "regulatory_action"
+        if "nsq" in hay or "not of standard" in hay or "substandard" in hay:
+            cat = "nsq_alert"
+        elif "warning" in hay or "fda" in hay:
+            cat = "warning_letter"
+        elif "recall" in hay:
+            cat = "recall"
+        elif "paper" in hay or "manual" in hay or "documentation" in hay:
+            cat = "documentation_issue"
+        trigger_events.append({**it, "category": cat})
+
+    return {
+        "website": website,
+        "linkedin_url": linkedin,
+        "company_status": company_status,
+        "decision_makers": decision_makers,
+        "intent_signals": intent_signals[:6],
+        "trigger_events": trigger_events[:5],
+        "activity_summary": "",
+    }
+
+
+_EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+
+
+def _extract_email(text: str, domain_hint: str = "") -> str:
+    """Best-effort email extraction from visible text."""
+    if not text:
+        return ""
+    matches = _EMAIL_RE.findall(text)
+    for m in matches:
+        if domain_hint and domain_hint in m:
+            return m
+    # Return first non-generic match
+    for m in matches:
+        if not m.lower().startswith(("noreply", "no-reply", "donotreply", "support@", "info@")):
+            return m
+    return matches[0] if matches else ""
+
 
 @activity.defn
-async def extract_lead_details_activity(data: dict) -> dict:
-    """Extract top pages (Tavily extract) and let Groq structure the final
-    lead record: website, LinkedIn URL, job postings and hiring news."""
-
+async def evaluate_and_save_lead_activity(payload: dict) -> dict:
+    """Evaluate all search results via LLM and persist the lead record."""
     def _work() -> dict:
-        company_name = data.get("company_name", "")
-        cats = data.get("results", {})
+        company_key = payload["company_key"]
+        company_name = payload["company_name"]
+        profile = payload.get("profile", {})
+        people = payload.get("people", {})
+        signals = payload.get("signals", {})
 
-        extract_urls = []
-        for cat in ("website", "linkedin", "hiring"):
-            for it in cats.get(cat, [])[:2]:
-                extract_urls.append(it["url"])
-        extract_urls = list(dict.fromkeys(extract_urls))[:6]
+        evaluated = _evaluate_lead(company_name, profile, people, signals)
 
-        page_text = _tavily_extract(extract_urls)
-        enriched = {}
-        for cat in ("website", "linkedin", "hiring"):
-            enriched[cat] = []
-            for it in cats.get(cat, []) or []:
-                row = dict(it)
-                if it["url"] in page_text:
-                    row["content"] = page_text[it["url"]][:3000]
-                enriched[cat].append(row)
+        # Best-effort email extraction from people snippets
+        for dm in evaluated.get("decision_makers", []):
+            if not dm.get("email"):
+                dm["email"] = ""
 
-        structured = _groq_extract(company_name, enriched)
-        if structured:
-            website = str(structured.get("website", "") or "").strip()
-            linkedin = str(structured.get("linkedin_url", "") or "").strip()
-            hirings = structured.get("hirings") or []
-            hiring_news = structured.get("hiring_news") or []
-            headline = str(structured.get("hiring_headline", "") or "").strip()
-        else:
-            website, linkedin = "", ""
-            hirings, hiring_news, headline = [], [], ""
+        website = evaluated.get("website", "")
+        domain_hint = website.split("/")[2] if "//" in website else ""
+        for dm in evaluated.get("decision_makers", []):
+            if dm.get("email"):
+                continue
+            for it in people.get("people_candidates", []):
+                if it.get("url") == dm.get("linkedin_url") or it.get("title", "") in dm.get("role", ""):
+                    email = _extract_email(it.get("snippet", ""), domain_hint)
+                    if email:
+                        dm["email"] = email
+                        break
 
-        # Groq is a hint, never a lossy gate: fill any empty field from the
-        # deterministic pickers so found URLs are never dropped.
-        if not website or not _website_plausible(website, company_name):
-            website = _pick_best_website(cats.get("website", []), company_name)
-        if not linkedin or "/posts/" in linkedin.lower():
-            candidate = _pick_linkedin(cats.get("linkedin", []), company_name)
-            if candidate:
-                linkedin = candidate
-        if not hirings:
-            hirings = _fallback_hirings(cats.get("hiring", []))
-        if not hiring_news:
-            hiring_news = _fallback_hiring_news(cats.get("hiring", []))
-
-        return {
-            "company_name": company_name,
-            "website": website,
-            "linkedin_url": linkedin,
-            "hiring": [dict(h) for h in hirings][:10],
-            "hiring_news": [dict(h) for h in hiring_news][:8],
-            "hiring_headline": headline,
-            "summary": {"searched_at": datetime.utcnow().isoformat()},
-        }
+        db = SessionLocal()
+        try:
+            row = db.query(CompanyLead).filter(CompanyLead.company_key == company_key).first()
+            if row is None:
+                row = CompanyLead(company_key=company_key)
+                db.add(row)
+            row.company_name = company_name
+            row.website = website
+            row.linkedin_url = evaluated.get("linkedin_url", "")
+            row.company_status = evaluated.get("company_status", "unknown")
+            row.decision_makers = evaluated.get("decision_makers", [])
+            row.intent_signals = evaluated.get("intent_signals", [])
+            row.trigger_events = evaluated.get("trigger_events", [])
+            row.activity_summary = evaluated.get("activity_summary", "")
+            row.hiring = [s for s in evaluated.get("intent_signals", []) if s.get("category") == "hiring"]
+            row.hiring_news = [s for s in evaluated.get("intent_signals", []) if s.get("category") != "hiring"]
+            row.summary = {
+                "searched_at": datetime.utcnow().isoformat(),
+                "profile_candidates": len(profile.get("website_candidates", [])) + len(profile.get("linkedin_candidates", [])),
+                "people_candidates": len(people.get("people_candidates", [])),
+                "signal_candidates": len(signals.get("hiring_candidates", [])) + len(signals.get("news_candidates", [])) + len(signals.get("trigger_candidates", [])),
+            }
+            row.status = "completed"
+            row.error = ""
+            row.fetched_at = datetime.utcnow()
+            db.commit()
+            return {"company_key": company_key, "status": "completed"}
+        except Exception as e:
+            db.rollback()
+            print(f"evaluate_and_save_lead_activity error: {e}")
+            return {"company_key": company_key, "status": "failed", "error": str(e)[:500]}
+        finally:
+            db.close()
 
     return await asyncio.to_thread(_work)
 
-@activity.defn
-def save_lead_research_activity(data: dict) -> dict:
-    """Upsert the researched lead record. Plain def: blocking DB work must run
-    in the worker's thread pool, not on the event loop."""
-    db = SessionLocal()
-    try:
-        row = db.query(CompanyLead).filter(CompanyLead.company_key == data["company_key"]).first()
-        if row is None:
-            row = CompanyLead(company_key=data["company_key"])
-            db.add(row)
-        row.company_name = data.get("company_name", "") or row.company_name
-        row.website = data.get("website", "") or row.website
-        row.linkedin_url = data.get("linkedin_url", "") or row.linkedin_url
-        row.hiring = data.get("hiring", []) or []
-        row.hiring_news = data.get("hiring_news", []) or []
-        row.summary = data.get("summary", {}) or {}
-        row.status = "completed"
-        row.error = ""
-        row.fetched_at = datetime.utcnow()
-        db.commit()
-        return {"company_key": data["company_key"], "status": "completed"}
-    except Exception as e:
-        db.rollback()
-        print(f"save_lead_research_activity error: {e}")
-        return {"company_key": data.get("company_key", ""), "status": "failed"}
-    finally:
-        db.close()
 
 @activity.defn
 def mark_lead_failed_activity(company_key: str, error: str) -> dict:
-    """Mark a lead's workflow run as failed so the UI stops showing
-    "Researching..." forever after an unrecoverable error."""
     db = SessionLocal()
     try:
         row = db.query(CompanyLead).filter(CompanyLead.company_key == company_key).first()
@@ -449,6 +493,11 @@ def mark_lead_failed_activity(company_key: str, error: str) -> dict:
     finally:
         db.close()
 
+
+# ---------------------------------------------------------------------------
+# Workflow
+# ---------------------------------------------------------------------------
+
 @workflow.defn
 class LeadResearchWorkflow:
     def __init__(self):
@@ -463,27 +512,41 @@ class LeadResearchWorkflow:
     async def run(self, company_key: str, company_name: str) -> dict:
         self._company_name = company_name
         try:
-            self._status = "searching"
-            results = await workflow.execute_activity(
-                search_lead_web_activity,
+            self._status = "searching_profile"
+            profile = await workflow.execute_activity(
+                search_company_profile_activity,
                 args=[company_name],
                 start_to_close_timeout=timedelta(minutes=5),
-                retry_policy=RetryPolicy(maximum_attempts=3),
+                retry_policy=RetryPolicy(maximum_attempts=2),
             )
 
-            self._status = "extracting"
-            data = await workflow.execute_activity(
-                extract_lead_details_activity,
-                args=[{"company_name": company_name, "results": results}],
-                start_to_close_timeout=timedelta(minutes=10),
-                retry_policy=RetryPolicy(maximum_attempts=3),
+            self._status = "searching_decision_makers"
+            people = await workflow.execute_activity(
+                search_decision_makers_activity,
+                args=[company_name],
+                start_to_close_timeout=timedelta(minutes=5),
+                retry_policy=RetryPolicy(maximum_attempts=2),
             )
 
-            self._status = "saving"
+            self._status = "searching_intent_signals"
+            signals = await workflow.execute_activity(
+                search_intent_signals_activity,
+                args=[company_name],
+                start_to_close_timeout=timedelta(minutes=5),
+                retry_policy=RetryPolicy(maximum_attempts=2),
+            )
+
+            self._status = "evaluating_and_saving"
             saved = await workflow.execute_activity(
-                save_lead_research_activity,
-                args=[{"company_key": company_key, **data}],
-                start_to_close_timeout=timedelta(minutes=2),
+                evaluate_and_save_lead_activity,
+                args=[{
+                    "company_key": company_key,
+                    "company_name": company_name,
+                    "profile": profile,
+                    "people": people,
+                    "signals": signals,
+                }],
+                start_to_close_timeout=timedelta(minutes=8),
                 retry_policy=RetryPolicy(maximum_attempts=2),
             )
 
