@@ -1,8 +1,11 @@
 import os
 import json
 import re
+import threading
+import time
+from collections import deque
 from dotenv import load_dotenv
-from groq import Groq
+from groq import Groq, RateLimitError
 from pydantic import BaseModel, ValidationError
 from typing import List
 
@@ -16,6 +19,147 @@ client = Groq(
     timeout=60.0,
     max_retries=2,
 )
+
+
+# ---------------------------------------------------------------------------
+# Groq rate-limit handling (RPM / TPM / TPD)
+# ---------------------------------------------------------------------------
+# Groq enforces per-minute request and token budgets per key+model, and the
+# free tier is strict. Instead of letting a transient 429 drop the batch
+# (which previously saved rows with empty llm_analysis), we pace calls
+# locally against the observed budgets and wait out 429s before retrying.
+# Daily-quota (TPD) errors are NOT retried: callers keep their existing
+# fallback so a quota-exhausted run still saves data for a later re-enrich.
+# State is process-wide (one worker has many threads), so all workflows share
+# the same budget.
+MAX_RATE_RETRIES = 6
+RATE_LIMIT_BASE_SLEEP = 10.0
+
+_RATE = {
+    "lock": threading.Lock(),
+    "min_interval": 0.5,          # enforced min seconds between any two calls
+    "last_request_at": 0.0,
+    "tokens_window": deque(),     # (unix_ts, tokens) sliding 60s usage
+    "tpm_limit": None,            # observed from x-ratelimit headers
+    "rpm_window": deque(),        # unix_ts request timestamps
+    "rpm_limit": None,            # observed from x-ratelimit headers
+}
+
+
+def _headers_int(headers, name, default=None):
+    try:
+        val = headers.get(name)
+        return int(float(val)) if val is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _update_rate_limits(headers) -> None:
+    limit = _headers_int(headers, "x-ratelimit-limit-tokens")
+    if limit:
+        _RATE["tpm_limit"] = limit
+    limit = _headers_int(headers, "x-ratelimit-limit-requests")
+    if limit:
+        _RATE["rpm_limit"] = limit
+
+
+def _pace_request(max_tokens: int) -> None:
+    """Sleep until the next call fits the observed RPM/TPM budget."""
+    now = time.monotonic()
+
+    since = now - _RATE["last_request_at"]
+    if since < _RATE["min_interval"]:
+        time.sleep(_RATE["min_interval"] - since)
+    now = time.monotonic()
+
+    # Token window (last 60s).
+    tokens = _RATE["tokens_window"]
+    while tokens and now - tokens[0][0] > 60.0:
+        tokens.popleft()
+    used_tpm = sum(t for _, t in tokens)
+    if _RATE["tpm_limit"] and used_tpm + max_tokens > _RATE["tpm_limit"]:
+        wait = max((60.0 - (now - ts)) for ts, _ in tokens) if tokens else 60.0
+        time.sleep(min(wait, 60.0))
+
+    # Request window (last 60s).
+    reqs = _RATE["rpm_window"]
+    while reqs and now - reqs[0] > 60.0:
+        reqs.popleft()
+    if _RATE["rpm_limit"] and len(reqs) >= _RATE["rpm_limit"]:
+        time.sleep(60.0 - (now - reqs[0]))
+
+
+def _record_request(tokens_used: int) -> None:
+    now = time.monotonic()
+    _RATE["last_request_at"] = now
+    _RATE["rpm_window"].append(now)
+    if tokens_used:
+        _RATE["tokens_window"].append((now, tokens_used))
+
+
+def _rate_limit_message(exc: RateLimitError) -> str:
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict) and err.get("message"):
+            return str(err["message"])
+    return str(exc)
+
+
+def _retry_seconds(exc: RateLimitError) -> float:
+    """Seconds to wait before retrying, from Groq's own reset hints."""
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None) or {}
+    retry = _headers_int(headers, "retry-after")
+    if retry:
+        return float(retry)
+    reset = (_headers_int(headers, "x-ratelimit-reset-tokens")
+             or _headers_int(headers, "x-ratelimit-reset-requests"))
+    if reset:
+        return float(reset) + 1.0
+    return RATE_LIMIT_BASE_SLEEP
+
+
+def _chat(model: str, messages: list, **kwargs):
+    """Rate-limited Groq chat completion.
+
+    Paces the request against the observed RPM/TPM budget (shared across the
+    process) and, on a transient 429, waits for the reset hint and retries up
+    to MAX_RATE_RETRIES instead of dropping the batch. Daily-quota (TPD)
+    errors return None immediately so callers fall back as before. Returns
+    None when retries are exhausted.
+    """
+    max_tokens = int(kwargs.get("max_tokens", 1024) or 1024)
+    with _RATE["lock"]:
+        _pace_request(max_tokens)
+
+    for attempt in range(MAX_RATE_RETRIES):
+        try:
+            _completions = client.chat.completions
+            completion = _completions.create(
+                model=model, messages=messages, **kwargs)
+        except RateLimitError as exc:
+            msg = _rate_limit_message(exc)
+            if "per day" in msg.lower() or "tpd" in msg.lower():
+                print(f"Groq daily token quota reached: {msg[:200]}", flush=True)
+                return None
+            with _RATE["lock"]:
+                _update_rate_limits(getattr(exc.response, "headers", None) or {})
+                _RATE["min_interval"] = max(_RATE["min_interval"], 2.0)
+            delay = _retry_seconds(exc)
+            print(f"Groq rate limited (attempt {attempt + 1}/{MAX_RATE_RETRIES}); "
+                  f"retrying in {delay:.0f}s", flush=True)
+            time.sleep(delay)
+            continue
+
+        tokens_used = getattr(getattr(completion, "usage", None),
+                              "total_tokens", 0) or 0
+        with _RATE["lock"]:
+            _record_request(tokens_used)
+        return completion
+
+    print("Groq rate limit retries exhausted; returning None", flush=True)
+    return None
 
 class ComplianceAuditResult(BaseModel):
     entity_name: str
@@ -104,7 +248,7 @@ def analyze_cdsco_failure_batch(batch_items: List[dict]) -> dict:
     """
     
     try:
-        completion = client.chat.completions.create(
+        completion = _chat(
             model="openai/gpt-oss-120b",
             messages=[
                 {"role": "system", "content": "You are a data extraction assistant that outputs strict JSON array wrapped in a 'results' object."},
@@ -184,7 +328,7 @@ def analyze_regulatory_finding(evidence_text: str, firm_name: str) -> dict:
     """
 
     try:
-        completion = client.chat.completions.create(
+        completion = _chat(
             model="openai/gpt-oss-120b",
             messages=[
                 {"role": "system", "content": "You output strict JSON."},
@@ -226,7 +370,7 @@ Inputs:
 {json.dumps([{"drug_name": (i.get("drug_name","") or "")[:120], "reason": (i.get("reason","") or "")[:300]} for i in chunk])}
 Respond ONLY with a valid JSON object with a single key: {{"labels": ["manual_process|formulation|unclear", ...]}}"""
         try:
-            completion = client.chat.completions.create(
+            completion = _chat(
                 model="openai/gpt-oss-120b",
                 messages=[
                     {"role": "system", "content": "You output strict JSON."},
@@ -287,7 +431,7 @@ Inputs:
 {json.dumps([{"drug_name": (i.get("drug_name","") or "")[:120], "reason": (i.get("reason","") or "")[:300]} for i in chunk])}
 Respond ONLY with a valid JSON object with a single key: {{"labels": ["process_control|contamination_control|stability|labeling_packaging|data_integrity|unclear", ...]}}"""
         try:
-            completion = client.chat.completions.create(
+            completion = _chat(
                 model="openai/gpt-oss-120b",
                 messages=[
                     {"role": "system", "content": "You output strict JSON."},
@@ -340,7 +484,7 @@ def extract_company_names_batch(raw_names: List[str]) -> List[str]:
     """
 
     try:
-        completion = client.chat.completions.create(
+        completion = _chat(
             model="openai/gpt-oss-120b",
             messages=[
                 {"role": "system", "content": "You output strict JSON."},
@@ -393,7 +537,7 @@ def generate_search_queries(record_details: dict) -> List[str]:
     """
     
     try:
-        completion = client.chat.completions.create(
+        completion = _chat(
             model="openai/gpt-oss-120b",
             messages=[
                 {"role": "system", "content": "You output strict JSON."},
@@ -573,7 +717,7 @@ def classify_web_evidence(article_text: str, record_details: dict) -> dict:
     """
     
     try:
-        completion = client.chat.completions.create(
+        completion = _chat(
             model="openai/gpt-oss-120b",
             messages=[
                 {"role": "system", "content": "You output strict JSON."},
@@ -780,7 +924,7 @@ in the same order.
     pre = [_fuzzy_company_match(company_name, r.get("title", "") + " " + r.get("snippet", ""))
            for r in results]
     try:
-        completion = client.chat.completions.create(
+        completion = _chat(
             model="openai/gpt-oss-120b",
             messages=[
                 {"role": "system", "content": "You output strict JSON."},

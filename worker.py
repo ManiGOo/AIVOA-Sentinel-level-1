@@ -5,11 +5,14 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 from temporal_tasks import (
     CDSCOScraperWorkflow,
+    CDSCOEnrichmentWorkflow,
     FailureModeBackfillWorkflow,
     ScheduleMGapBackfillWorkflow,
     scrape_cdsco_endpoint,
+    save_raw_to_db,
+    load_enrichment_candidates,
     process_batch_with_llm,
-    save_to_db,
+    apply_enrichment_to_db,
     load_backfill_candidates,
     classify_failure_modes_activity,
     apply_failure_modes,
@@ -25,9 +28,15 @@ async def main():
     worker = Worker(
         client,
         task_queue="scraper-task-queue",
-        workflows=[CDSCOScraperWorkflow, FailureModeBackfillWorkflow, ScheduleMGapBackfillWorkflow],
+        workflows=[
+            CDSCOScraperWorkflow,
+            CDSCOEnrichmentWorkflow,
+            FailureModeBackfillWorkflow,
+            ScheduleMGapBackfillWorkflow,
+        ],
         activities=[
-            scrape_cdsco_endpoint, process_batch_with_llm, save_to_db,
+            scrape_cdsco_endpoint, save_raw_to_db,
+            load_enrichment_candidates, process_batch_with_llm, apply_enrichment_to_db,
             load_backfill_candidates, classify_failure_modes_activity, apply_failure_modes,
             classify_schedule_m_gap_activity, apply_schedule_m_gaps,
         ],

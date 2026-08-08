@@ -267,20 +267,21 @@ async def scrape_cdsco_endpoint(event_type: str, year: str = None) -> dict:
 
 @activity.defn
 async def process_batch_with_llm(data: dict) -> dict:
-    # data: {"items": [...], "event_type": ...}
+    # data: {"items": [{drug_name, manufacturer, batch_no, reason,
+    #                   event_date, event_type}]}. event_type is per-item so a
+    # batch may mix NSQ and SPURIOUS rows without mis-scoring.
     items = data["items"]
-    event_type = data["event_type"]
-    
-    # We will pass the list of items to cognitive_engine.
+
     # Run in a thread so the blocking Groq HTTP call cannot freeze the
     # worker's event loop (which previously left the activity stuck until
     # the start-to-close timeout redelivered it).
     llm_results = await asyncio.to_thread(analyze_cdsco_failure_batch, items)
-    
+
     processed_items = []
     for i, item in enumerate(items):
         analysis = llm_results.get(str(i), {})
         event_date = item.pop("event_date", None)
+        event_type = item.pop("event_type", "NSQ_DRUG")
         score = calculate_base_score(event_type, analysis, event_date)
         processed_items.append({
             "event_type": event_type,
@@ -289,18 +290,125 @@ async def process_batch_with_llm(data: dict) -> dict:
             "score": score,
             "event_date": event_date
         })
-        
+
     return {"processed_items": processed_items}
 
 @activity.defn
-async def save_to_db(data: dict) -> str:
-    processed_items = data.get("processed_items", [])
-    if not processed_items:
+def save_raw_to_db(data: dict) -> str:
+    """Insert freshly scraped CDSCO rows with NO AI enrichment yet.
+
+    Rows are saved with ``llm_analysis = {}`` and ``score = 0``; the separate
+    CDSCOEnrichmentWorkflow fills those in afterwards, so scraping is never
+    blocked by Groq rate limits. Dedup on (event_type, drug_name, manufacturer,
+    batch_no). Plain def: blocking DB work must run in the worker's thread
+    pool, not on the event loop."""
+    items = data.get("items", [])
+    event_type = data.get("event_type", "")
+    if not items:
         return "No items to save."
-        
+
     db_session = SessionLocal()
     inserted = 0
     skipped = 0
+    try:
+        for item in items:
+            drug_name = item.get("drug_name", "")
+            manufacturer = item.get("manufacturer", "")
+            batch_no = item.get("batch_no", "")
+
+            if drug_name or manufacturer or batch_no:
+                existing = db_session.query(RegulatoryEvent).filter(
+                    RegulatoryEvent.event_type == event_type,
+                    func.coalesce(RegulatoryEvent.raw_details['drug_name'].astext, '') == drug_name,
+                    func.coalesce(RegulatoryEvent.raw_details['manufacturer'].astext, '') == manufacturer,
+                    func.coalesce(RegulatoryEvent.raw_details['batch_no'].astext, '') == batch_no,
+                ).first()
+                if existing:
+                    skipped += 1
+                    continue
+
+            event_date = item.get("event_date")
+            new_event = RegulatoryEvent(
+                event_type=event_type,
+                raw_details=item,
+                llm_analysis={},
+                score=0,
+                reporting_source=item.get("reporting_source", ""),
+                reported_by=item.get("reported_by", ""),
+                event_date=datetime.fromisoformat(event_date).date() if event_date else datetime.utcnow().date()
+            )
+            db_session.add(new_event)
+            inserted += 1
+        db_session.commit()
+        return f"Committed {inserted} raw records (skipped {skipped} duplicates)."
+    finally:
+        db_session.close()
+
+
+@activity.defn
+def load_enrichment_candidates(data: dict) -> dict:
+    """Load stored CDSCO rows that still need AI enrichment + scoring.
+
+    Filters by event_date year range (``year_start``/``year_end``, inclusive)
+    and — by default — rows whose ``llm_analysis`` is empty. ``limit`` caps the
+    number of candidates (useful for paced multi-day backfills). Plain def:
+    blocking DB work must run in the worker's thread pool, not on the event
+    loop."""
+    db = SessionLocal()
+    try:
+        query = db.query(RegulatoryEvent)
+        if data.get("year_start"):
+            query = query.filter(
+                RegulatoryEvent.event_date >= datetime.strptime(f"{data['year_start']}-01-01", "%Y-%m-%d").date())
+        if data.get("year_end"):
+            query = query.filter(
+                RegulatoryEvent.event_date <= datetime.strptime(f"{data['year_end']}-12-31", "%Y-%m-%d").date())
+        rows = query.order_by(RegulatoryEvent.event_date.asc()).all()
+
+        if data.get("only_missing", True):
+            rows = [r for r in rows if not (r.llm_analysis or {})]
+        if data.get("limit"):
+            rows = rows[:int(data["limit"])]
+
+        candidates = []
+        for ev in rows:
+            raw = ev.raw_details or {}
+            event_date = ev.event_date.isoformat() if ev.event_date else None
+            event_type = ev.event_type or "NSQ_DRUG"
+            candidates.append({
+                "event_id": str(ev.event_id),
+                "event_type": event_type,
+                "event_date": event_date,
+                "item": {
+                    "drug_name": raw.get("drug_name", ""),
+                    "manufacturer": raw.get("manufacturer", ""),
+                    "batch_no": raw.get("batch_no", ""),
+                    "reason": raw.get("reason", ""),
+                    "event_date": event_date,
+                    "event_type": event_type,
+                },
+            })
+        return {"candidates": candidates, "total_rows": len(rows)}
+    finally:
+        db.close()
+
+
+@activity.defn
+def apply_enrichment_to_db(data: dict) -> str:
+    """Persist one batch of LLM analyses + scores back onto stored rows.
+
+    Each processed item carries ``event_id``, ``llm_analysis`` and the base
+    ``score`` computed by ``process_batch_with_llm``; here we apply recency
+    weight and the repeat-offender bonus (counted over already-committed rows)
+    and update in place. Plain def: blocking DB work must run in the worker's
+    thread pool, not on the event loop."""
+    processed_items = data.get("processed_items", [])
+    if not processed_items:
+        return "No items to update."
+
+    db_session = SessionLocal()
+    updated = 0
+    missing = 0
     try:
         # Prior-event counts per manufacturer (from already-committed rows).
         # Placeholder manufacturers (e.g. "Under Investigation") map to ''
@@ -314,38 +422,21 @@ async def save_to_db(data: dict) -> str:
                 counts[key] = counts.get(key, 0) + cnt
 
         for item in processed_items:
-            raw = item["raw_details"]
-            drug_name = raw.get("drug_name", "")
-            manufacturer = raw.get("manufacturer", "")
-            batch_no = raw.get("batch_no", "")
-
-            if drug_name or manufacturer or batch_no:
-                existing = db_session.query(RegulatoryEvent).filter(
-                    RegulatoryEvent.event_type == item["event_type"],
-                    func.coalesce(RegulatoryEvent.raw_details['drug_name'].astext, '') == drug_name,
-                    func.coalesce(RegulatoryEvent.raw_details['manufacturer'].astext, '') == manufacturer,
-                    func.coalesce(RegulatoryEvent.raw_details['batch_no'].astext, '') == batch_no,
-                ).first()
-                if existing:
-                    skipped += 1
-                    continue
-
-            event_date = item.get("event_date")
-            final_score = round(item["score"] * recency_weight(event_date)) \
-                + repeat_offender_bonus(counts.get(mfr_key(manufacturer), 0))
-            new_event = RegulatoryEvent(
-                event_type=item["event_type"],
-                raw_details=raw,
-                llm_analysis=item["llm_analysis"],
-                score=final_score,
-                reporting_source=raw.get("reporting_source", ""),
-                reported_by=raw.get("reported_by", ""),
-                event_date=datetime.fromisoformat(event_date).date() if event_date else datetime.utcnow().date()
-            )
-            db_session.add(new_event)
-            inserted += 1
+            event_id = item.get("event_id")
+            if not event_id:
+                continue
+            ev = db_session.query(RegulatoryEvent).filter(
+                RegulatoryEvent.event_id == event_id).first()
+            if not ev:
+                missing += 1
+                continue
+            raw = ev.raw_details or {}
+            ev.llm_analysis = item.get("llm_analysis", {})
+            ev.score = round(item.get("score", 0) * recency_weight(ev.event_date)) \
+                + repeat_offender_bonus(counts.get(mfr_key(raw.get("manufacturer", "")), 0))
+            updated += 1
         db_session.commit()
-        return f"Committed {inserted} records (skipped {skipped} duplicates)."
+        return f"Updated {updated} records (missing {missing})."
     finally:
         db_session.close()
 
@@ -377,18 +468,19 @@ class CDSCOScraperWorkflow:
         self._event_type = ""
         self._finished = False
         self._warnings = []
-        self._finished = False
 
         results = {}
         for event_type in ["NSQ_DRUG", "SPURIOUS_DRUG"]:
             self._event_type = event_type
-            # 1. Scrape data (loop all months; year=None = full backfill)
+            # 1. Scrape data (loop all months; year=None = full backfill).
+            #    NO LLM here: AI enrichment + scoring is a separate workflow
+            #    (CDSCOEnrichmentWorkflow) so scraping is never rate-limited.
             scrape_result = await workflow.execute_activity(
                 scrape_cdsco_endpoint,
                 args=[event_type, year],
                 start_to_close_timeout=timedelta(minutes=15),
             )
-            
+
             items = scrape_result.get("items", [])
             total_items = len(items)
             self._total += total_items
@@ -396,41 +488,111 @@ class CDSCOScraperWorkflow:
             self._warnings.extend(month_warnings)
             for warning in month_warnings:
                 workflow.logger.warning(warning)
+
+            # 2. Save raw rows (dedup) — llm_analysis={}, score=0 for now.
+            save_result = await workflow.execute_activity(
+                save_raw_to_db,
+                {"event_type": event_type, "items": items},
+                start_to_close_timeout=timedelta(minutes=2),
+            )
+
+            self._processed += total_items
             results[event_type] = {
                 "total_found": total_items,
-                "processed": 0,
+                "saved": save_result,
                 "years": scrape_result.get("years", []),
                 "warnings": month_warnings,
             }
-            
-            # 2. Chunk items into batches of 5
-            batch_size = 5
-            batches = [items[i:i + batch_size] for i in range(0, total_items, batch_size)]
-            
-            for batch in batches:
-                # 3. Process LLM
-                llm_result = await workflow.execute_activity(
-                    process_batch_with_llm,
-                    {"items": batch, "event_type": event_type},
-                    start_to_close_timeout=timedelta(minutes=5),
-                )
-                
-                # 4. Save to DB
-                await workflow.execute_activity(
-                    save_to_db,
-                    llm_result,
-                    start_to_close_timeout=timedelta(minutes=1),
-                )
-                
-                results[event_type]["processed"] += len(batch)
-                self._processed += len(batch)
-                
-                # Sleep between batches to respect the 8000 TPM limit (max ~3 requests per min)
-                await workflow.sleep(timedelta(seconds=20))
-                
+
         self._event_type = ""
         self._finished = True
         return results
+
+
+@workflow.defn
+class CDSCOEnrichmentWorkflow:
+    """Second stage of the split pipeline: run AI enrichment + scoring over
+    already-scraped CDSCO rows (those saved with empty ``llm_analysis``).
+
+    This workflow is decoupled from scraping so it can be re-run / backfilled
+    without touching CDSCO again, and paced to Groq's token budget.
+    """
+
+    def __init__(self):
+        self._phase = "idle"
+        self._total = 0
+        self._processed = 0
+        self._finished = False
+        self._warnings = []
+
+    @workflow.query
+    def progress(self) -> dict:
+        start_time = workflow.info().start_time
+        return {
+            "phase": self._phase,
+            "total": self._total,
+            "processed": self._processed,
+            "finished": self._finished,
+            "warnings": list(self._warnings),
+            "started_at": start_time.isoformat() if start_time else None,
+        }
+
+    @workflow.run
+    async def run(self, year_start: str = None, year_end: str = None,
+                  only_missing: bool = True, limit: int = None) -> dict:
+        self._phase = "loading"
+        self._total = 0
+        self._processed = 0
+        self._finished = False
+        self._warnings = []
+
+        loaded = await workflow.execute_activity(
+            load_enrichment_candidates,
+            {"year_start": year_start, "year_end": year_end,
+             "only_missing": only_missing, "limit": limit},
+            start_to_close_timeout=timedelta(minutes=10),
+        )
+        candidates = loaded.get("candidates", [])
+        self._total = len(candidates)
+
+        self._phase = "enriching"
+        batch_size = 5
+        updated = 0
+        for start in range(0, len(candidates), batch_size):
+            batch = candidates[start:start + batch_size]
+            items = [c["item"] for c in batch]
+
+            llm_result = await workflow.execute_activity(
+                process_batch_with_llm,
+                {"items": items},
+                start_to_close_timeout=timedelta(minutes=5),
+            )
+
+            processed_items = llm_result.get("processed_items", [])
+            # Re-attach the DB row id (kept out of the LLM prompt) so the
+            # update activity knows which stored row to touch.
+            for j, processed in enumerate(processed_items):
+                processed["event_id"] = batch[j]["event_id"]
+
+            await workflow.execute_activity(
+                apply_enrichment_to_db,
+                {"processed_items": processed_items},
+                start_to_close_timeout=timedelta(minutes=1),
+            )
+
+            updated += len(processed_items)
+            self._processed += len(batch)
+
+            # Sleep between batches to respect the Groq TPM limit.
+            await workflow.sleep(timedelta(seconds=20))
+
+        self._phase = "done"
+        self._finished = True
+        return {
+            "candidates_total": len(candidates),
+            "updated": updated,
+            "warnings": list(self._warnings),
+        }
 
 
 @activity.defn

@@ -140,6 +140,33 @@ async def get_scraper_status() -> str:
 
 
 @mcp.tool()
+async def trigger_cdsco_enrichment(
+    year_start: str = None,
+    year_end: str = None,
+    only_missing: bool = True,
+    limit: int = None,
+) -> str:
+    """Start the CDSCO enrichment workflow (AI analysis + scoring over stored rows).
+
+    Args:
+        year_start: Inclusive start year of event_date (e.g. '2024')
+        year_end: Inclusive end year of event_date (e.g. '2022')
+        only_missing: Only enrich rows with empty llm_analysis (default True)
+        limit: Cap the number of rows to enrich
+    """
+    return json.dumps(await scraper.trigger_cdsco_enrichment(
+        year_start=year_start, year_end=year_end,
+        only_missing=only_missing, limit=limit,
+    ))
+
+
+@mcp.tool()
+async def get_cdsco_enrichment_status() -> str:
+    """Get live CDSCO enrichment workflow progress, processed count, and ETA."""
+    return json.dumps(await scraper.get_cdsco_enrichment_status())
+
+
+@mcp.tool()
 async def trigger_enrichment(
     source: str = "fda",
     limit: int = 50,

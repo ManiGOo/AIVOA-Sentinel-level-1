@@ -101,6 +101,72 @@ async def get_scraper_status() -> dict:
         return {"error": str(e)}
 
 
+async def trigger_cdsco_enrichment(
+    year_start: str | None = None,
+    year_end: str | None = None,
+    only_missing: bool = True,
+    limit: int | None = None,
+) -> dict:
+    """Start the CDSCO enrichment workflow (AI analysis + scoring over stored rows)."""
+    if VIEW_ONLY:
+        return {"error": "Enrichment disabled (view-only mode)."}
+    try:
+        client = await Client.connect(TEMPORAL_HOST)
+        workflow_id = f"cdsco-enrichment-mcp-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+        handle = await client.start_workflow(
+            "CDSCOEnrichmentWorkflow",
+            args=[year_start, year_end, only_missing, limit],
+            id=workflow_id,
+            task_queue="scraper-task-queue",
+        )
+        return {"status": "started", "workflow_id": handle.id,
+                "year_start": year_start, "year_end": year_end,
+                "only_missing": only_missing, "limit": limit}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+async def get_cdsco_enrichment_status() -> dict:
+    """Get live CDSCO enrichment workflow progress and ETA."""
+    if VIEW_ONLY:
+        return {"status": "disabled"}
+    try:
+        client = await Client.connect(TEMPORAL_HOST)
+        found = None
+        async for e in client.list_workflows(
+            query="WorkflowType = 'CDSCOEnrichmentWorkflow' AND ExecutionStatus = 'Running'",
+            limit=1,
+        ):
+            found = e
+        if not found:
+            return {"status": "idle", "total": 0, "processed": 0, "percent": 0}
+
+        handle = client.get_workflow_handle(found.id)
+        progress = await handle.query("progress")
+        total = progress.get("total", 0)
+        processed = progress.get("processed", 0)
+        started = progress.get("started_at")
+        eta_seconds = None
+        if started and processed > 0:
+            started_dt = datetime.fromisoformat(started)
+            elapsed = (datetime.now(timezone.utc) - started_dt).total_seconds()
+            rate = processed / elapsed if elapsed > 0 else 0
+            if rate > 0 and total > processed:
+                eta_seconds = (total - processed) / rate
+        return {
+            "status": "running" if not progress.get("finished") else "finished",
+            "workflow_id": found.id,
+            "phase": progress.get("phase", ""),
+            "total": total,
+            "processed": processed,
+            "percent": round(processed / total * 100) if total else 0,
+            "eta_seconds": round(eta_seconds) if eta_seconds else None,
+            "warnings": progress.get("warnings", []),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 async def trigger_enrichment(
     source: str = "fda",
     limit: int = 50,

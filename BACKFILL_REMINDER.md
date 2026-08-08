@@ -63,10 +63,14 @@ limits and daily quota never bite.
 
 - **2025 + 2026 are already fully scraped and analyzed in the DB (2,989 records).**
   Re-running those years re-burns LLM tokens on records that already exist
-  (`save_to_db` skips duplicates). Only re-run them if we want a fresh analysis
-  pass after classifier/LLM changes.
+  (`save_raw_to_db` skips duplicates on event_type/drug/manufacturer/batch).
+  Only re-run them if we want a fresh analysis pass after classifier/LLM changes.
 - The actual gap is **NSQ 2019–2024** (~3,000–4,300 records, ~700K–1M tokens total,
   spread across ~5–7 days at the pacing above).
+- The scraper is now **split into two Temporal workflows**: `CDSCOScraperWorkflow`
+  (scrape + save raw, no LLM) and `CDSCOEnrichmentWorkflow` (Groq analysis + scoring
+  over stored rows). See `CDSCO_2022_2024_BACKFILL_REMINDER.md` for the exact
+  scrape-then-enrich command sequence.
 - Also pending after scraping each year: `run_failure_mode_backfill.py` and
   `run_schedule_m_gap_backfill.py` re-classify the stored rows (Groq-only passes).
 

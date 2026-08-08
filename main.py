@@ -597,6 +597,110 @@ async def trigger_scraper(req: Optional[ScraperTriggerRequest] = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+class EnrichmentBackfillRequest(BaseModel):
+    year_start: Optional[str] = None   # inclusive, e.g. "2024"
+    year_end: Optional[str] = None     # inclusive, e.g. "2022"
+    only_missing: bool = True          # skip rows that already have llm_analysis
+    limit: Optional[int] = None        # cap candidates (paced multi-day backfills)
+
+
+@app.get("/api/v1/scraper/enrichment/status")
+async def cdsco_enrichment_status():
+    """
+    Live CDSCO enrichment workflow status (AI analysis + scoring over stored
+    raw rows). Mirrors /api/v1/scraper/status but for CDSCOEnrichmentWorkflow.
+    """
+    if VIEW_ONLY:
+        return {"status": "disabled", "detail": "Scraper execution disabled (view-only deployment)."}
+    try:
+        client = await Client.connect(os.environ.get("TEMPORAL_HOST", "localhost:7233"))
+
+        found = None
+        async for e in client.list_workflows(
+            query="WorkflowType = 'CDSCOEnrichmentWorkflow' AND ExecutionStatus = 'Running'",
+            limit=1,
+        ):
+            found = e
+        if not found:
+            last = None
+            async for e in client.list_workflows(
+                query="WorkflowType = 'CDSCOEnrichmentWorkflow'", limit=1
+            ):
+                last = e
+            if last:
+                try:
+                    await client.get_workflow_handle(last.id).result()
+                except FailureError as exc:
+                    return {
+                        "status": "failed",
+                        "workflow_id": last.id,
+                        "detail": str(exc).splitlines()[0][:400],
+                    }
+            return {"status": "idle", "total": 0, "processed": 0, "percent": 0}
+
+        handle = client.get_workflow_handle(found.id)
+        progress = await handle.query("progress")
+
+        total = progress.get("total", 0)
+        processed = progress.get("processed", 0)
+        started = progress.get("started_at")
+
+        elapsed = None
+        eta_seconds = None
+        if started:
+            started_dt = datetime.fromisoformat(started)
+            elapsed = (datetime.now(timezone.utc) - started_dt).total_seconds()
+            rate = (processed / elapsed) if (elapsed > 0 and processed > 0) else 0
+            if rate > 0 and total > processed:
+                eta_seconds = (total - processed) / rate
+
+        percent = round(processed / total * 100) if total else 0
+        return {
+            "status": "finished" if progress.get("finished") else "running",
+            "workflow_id": found.id,
+            "phase": progress.get("phase", ""),
+            "total": total,
+            "processed": processed,
+            "percent": percent,
+            "elapsed_seconds": round(elapsed) if elapsed is not None else None,
+            "eta_seconds": round(eta_seconds) if eta_seconds is not None else None,
+            "warnings": progress.get("warnings", []),
+        }
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+@app.post("/api/v1/scraper/enrichment/trigger")
+async def trigger_cdsco_enrichment(req: Optional[EnrichmentBackfillRequest] = None):
+    """
+    Runs AI enrichment + scoring over already-scraped CDSCO rows.
+    - No body                 -> all rows with empty llm_analysis.
+    - {"year_start": "2024", "year_end": "2022"} -> that year range only.
+    - {"only_missing": false} -> re-enrich every row in range.
+    - {"limit": N}            -> cap the batch (pace multi-day backfills).
+    """
+    req = req or EnrichmentBackfillRequest()
+    if VIEW_ONLY:
+        raise HTTPException(status_code=403, detail="Scraper execution is disabled in view-only mode.")
+    try:
+        client = await Client.connect(os.environ.get("TEMPORAL_HOST", "localhost:7233"))
+
+        workflow_id = f"cdsco-enrichment-workflow-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+        handle = await client.start_workflow(
+            "CDSCOEnrichmentWorkflow",
+            args=[req.year_start, req.year_end, req.only_missing, req.limit],
+            id=workflow_id,
+            task_queue="scraper-task-queue",
+        )
+        return {
+            "status": "SUCCESS",
+            "message": f"Enrichment workflow started with ID: {handle.id}",
+            "workflow_id": handle.id,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 def _top_manufacturers(limit: int = 50) -> List[str]:
     """Distinct real manufacturers from regulatory_events, ranked by event
     count. CDSCO placeholders ('Under Investigation', etc.) are excluded."""
