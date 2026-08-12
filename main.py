@@ -9,10 +9,9 @@ from pydantic import BaseModel
 from datetime import datetime, timezone
 import os
 import re
-import uuid
 from contextlib import asynccontextmanager
 
-from db_setup import SessionLocal, RegulatoryEvent, RegulatoryEvidence, EnrichmentCheck, WebEvidence, CompanyLead, Campaign, CampaignLead
+from db_setup import SessionLocal, RegulatoryEvent, RegulatoryEvidence, EnrichmentCheck, WebEvidence, CompanyLead
 from temporal_tasks import MANDATE_START, recency_weight, repeat_offender_bonus, mfr_key
 from company_names import clean_company_name, PAREN
 from paper_category import assess_paper_category
@@ -1159,118 +1158,31 @@ def get_lead_detail(company_key: str, db: Session = Depends(get_db)):
     if not row:
         raise HTTPException(status_code=404, detail="Lead not found")
     return _lead_payload(row)
-
-
-# ---------------------------------------------------------------------------
-# Campaigns
-# ---------------------------------------------------------------------------
-
-@app.get("/api/v1/campaigns")
-def list_campaigns(db: Session = Depends(get_db)):
-    campaigns = db.query(Campaign).order_by(Campaign.created_at.desc()).all()
-    items = []
-    for c in campaigns:
-        lead_count = db.query(CampaignLead).filter(CampaignLead.campaign_id == c.campaign_id).count()
-        items.append(_campaign_payload(c, lead_count))
-    return {"items": items}
-
-
-@app.get("/api/v1/campaigns/{campaign_id}")
-def get_campaign(campaign_id: str, db: Session = Depends(get_db)):
-    c = db.query(Campaign).filter(Campaign.campaign_id == campaign_id).first()
-    if not c:
-        raise HTTPException(status_code=404, detail="Campaign not found")
-    leads = db.query(CampaignLead).filter(CampaignLead.campaign_id == campaign_id).all()
-    lead_count = len(leads)
-    payload = _campaign_payload(c, lead_count)
-    payload["leads"] = [_campaign_lead_payload(cl) for cl in leads]
-    return payload
-
-
-class CreateCampaignRequest(BaseModel):
-    name: str
-    leads: list = []  # [{company_key, decision_maker}]
-    sequence_config: list = []
-    created_by: str = ""
-
-
-@app.post("/api/v1/campaigns")
-def create_campaign(req: CreateCampaignRequest, db: Session = Depends(get_db)):
-    if not req.leads:
-        raise HTTPException(status_code=422, detail="Select at least one lead.")
-    campaign_id = f"campaign-{uuid.uuid4().hex[:12]}"
-
-    from campaign_tasks import create_campaign_activity
-    result = create_campaign_activity({
-        "campaign_id": campaign_id,
-        "name": req.name or "Untitled Campaign",
-        "leads": req.leads,
-        "sequence_config": req.sequence_config,
-        "created_by": req.created_by,
-    })
-    if result.get("status") == "failed":
-        raise HTTPException(status_code=500, detail=result.get("error", "Failed to create campaign"))
-    return result
-
-
-@app.post("/api/v1/campaigns/{campaign_id}/start")
-async def start_campaign(campaign_id: str, db: Session = Depends(get_db)):
-    c = db.query(Campaign).filter(Campaign.campaign_id == campaign_id).first()
-    if not c:
-        raise HTTPException(status_code=404, detail="Campaign not found")
-    if c.status == "running":
-        raise HTTPException(status_code=400, detail="Campaign already running")
-
-    client = await Client.connect(os.environ.get("TEMPORAL_HOST", "localhost:7233"))
-    workflow_id = f"campaign-{campaign_id}"
-    try:
-        handle = await client.start_workflow(
-            "CampaignWorkflow",
-            args=[campaign_id],
-            id=workflow_id,
-            task_queue="enrichment-task-queue",
-        )
-        c.workflow_id = handle.id
-        db.commit()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to start campaign: {str(e)[:300]}")
-    return {"campaign_id": campaign_id, "status": "running", "workflow_id": handle.id}
-
-
-def _campaign_payload(c, lead_count: int = 0) -> dict:
-    return {
-        "campaign_id": c.campaign_id,
-        "name": c.name,
-        "status": c.status,
-        "lead_count": lead_count,
-        "sequence_config": c.sequence_config or [],
-        "created_at": str(c.created_at) if c.created_at else None,
-        "started_at": str(c.started_at) if c.started_at else None,
-        "completed_at": str(c.completed_at) if c.completed_at else None,
-        "workflow_id": c.workflow_id or "",
-    }
-
-
-def _campaign_lead_payload(cl) -> dict:
-    return {
-        "company_key": cl.company_key,
-        "status": cl.status,
-        "current_step": cl.current_step,
-        "decision_maker": cl.decision_maker or {},
-        "messages": cl.messages or [],
-        "last_contact_at": str(cl.last_contact_at) if cl.last_contact_at else None,
-        "replied_at": str(cl.replied_at) if cl.replied_at else None,
-    }
-
-
 def _lead_payload(r) -> dict:
+    # Backfill provenance for records created before contact source fields were
+
+    # added to the workflow. Corporate-registry directors are persisted
+    # separately, so existing leads can still show their verification source.
+    registry = r.corporate_registry or {}
+    registry_by_name = {
+        (d.get("name") or "").strip().lower(): d
+        for d in registry.get("directors", [])
+        if d.get("name")
+    }
+    decision_makers = []
+    for dm in (r.decision_makers or []):
+        if not dm.get("source") and dm.get("name", "").strip().lower() in registry_by_name:
+            rd = registry_by_name[dm["name"].strip().lower()]
+            dm = {**dm, "source": "corporate_registry",
+                  "source_url": rd.get("source_url", "")}
+        decision_makers.append(dm)
     return {
         "company_key": r.company_key,
         "company_name": r.company_name,
         "website": r.website,
         "linkedin_url": r.linkedin_url,
         "company_status": r.company_status or "unknown",
-        "decision_makers": r.decision_makers or [],
+        "decision_makers": decision_makers,
         "intent_signals": r.intent_signals or [],
         "trigger_events": r.trigger_events or [],
         "activity_summary": r.activity_summary or "",
