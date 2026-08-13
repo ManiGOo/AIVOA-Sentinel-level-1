@@ -1078,8 +1078,13 @@ def get_web_evidence(event_id: str, db: Session = Depends(get_db)):
 
 MAX_LEADS_PER_BATCH = 10
 
+class LeadCompanyInput(BaseModel):
+    company_key: str
+    company_name: str = ""
+
 class LeadResearchRequest(BaseModel):
     company_keys: List[str] = []
+    companies: List[LeadCompanyInput] = []
 
 @app.post("/api/v1/leads/research")
 async def trigger_lead_research(req: LeadResearchRequest, db: Session = Depends(get_db)):
@@ -1103,9 +1108,17 @@ async def trigger_lead_research(req: LeadResearchRequest, db: Session = Depends(
             continue
         names[gkey] = clean_company_name(PAREN.sub("", mfr)) or gkey
 
-    missing = [k for k in keys if k not in names]
-    if missing:
-        raise HTTPException(status_code=404, detail=f"Unknown company keys: {missing[:5]}")
+    # User-created companies (e.g. manual general companies from the sales app)
+    # carry their own display name; merge them so their keys still resolve.
+    for c in req.companies or []:
+        if c.company_key and c.company_name:
+            names.setdefault(c.company_key, c.company_name.strip())
+
+    # Never hard-fail on a key without a known display name — fall back to the
+    # cleaned key so manually added companies can be researched as leads.
+    for k in keys:
+        if k not in names:
+            names[k] = clean_company_name(PAREN.sub("", k)) or k
 
     client = await Client.connect(os.environ.get("TEMPORAL_HOST", "localhost:7233"))
     started = []

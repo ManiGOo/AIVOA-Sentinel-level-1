@@ -1,9 +1,8 @@
 import asyncio
-import os
 from concurrent.futures import ThreadPoolExecutor
 
 from db_setup import init_db
-from temporalio.client import Client
+from temporal_connect import connect_with_retry
 from temporalio.worker import Worker
 from enrichment_tasks import EnrichmentWorkflow, fetch_external_evidence
 from web_evidence_tasks import (
@@ -34,7 +33,7 @@ from regulatory_scrape_tasks import (
 
 async def main():
     init_db()
-    client = await Client.connect(os.environ.get("TEMPORAL_HOST", "localhost:7233"))
+    client = await connect_with_retry()
     worker = Worker(
         client,
         task_queue="enrichment-task-queue",
