@@ -132,6 +132,17 @@ def get_lead(company_name: str) -> str:
     return json.dumps(leads.get_lead(company_name), default=str)
 
 
+@mcp.tool()
+def get_company_phones(company_name: str) -> str:
+    """Retrieve phone numbers scraped from a company's own website, each
+    labelled with what it's for (Mobile, Office, Fax, Sales, Support, ...).
+
+    Args:
+        company_name: Company name or key (e.g. 'R.P. Biotech Pvt. Ltd').
+    """
+    return json.dumps(leads.get_company_phones(company_name), default=str)
+
+
 # ===== WORKFLOW TRIGGER TOOLS (async) ========================================
 
 @mcp.tool()

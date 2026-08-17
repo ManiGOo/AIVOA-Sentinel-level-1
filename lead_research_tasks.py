@@ -9,7 +9,7 @@ from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
     from tavily import TavilyClient
-    from db_setup import SessionLocal, CompanyLead
+    from db_setup import SessionLocal, CompanyLead, CompanyPhone
     from company_names import clean_company_name, PAREN
     from cognitive_engine import (
         client as groq_client,
@@ -21,6 +21,10 @@ with workflow.unsafe.imports_passed_through():
         from playwright.sync_api import sync_playwright
     except Exception:
         sync_playwright = None
+    try:
+        from bs4 import BeautifulSoup
+    except Exception:
+        BeautifulSoup = None
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -385,6 +389,7 @@ def _role_type_from_text(text: str) -> str:
 _PHONE_RE = re.compile(
     r"(?:\+91[\s\-]?|0)?[\s\-]?\(?\d{5}\)?[\s\-]?\d{5}\b"
     r"|\+91[\s\-]?\d{5}[\s\-]?\d{5}"
+    r"|0\d{2,4}[\s\-]?\d{6,8}\b"
 )
 _EMAIL_RE2 = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 _ADDRESS_HINTS = (
@@ -402,8 +407,18 @@ def _scrape_site_text(url: str, max_pages: int = 6, per_page_chars: int = 12000)
     """Web-scrape a company website: home + likely about/team/contact pages.
 
     Uses Playwright (headless Chromium) so JS-rendered sites work. Returns a
-    list of {url, title, text} for the pages that actually loaded."""
+    list of {url, title, text, html} for the pages that actually loaded.
+
+    Link discovery: after loading the homepage, we extract all internal links
+    and pick those whose text or path matches contact/about/team keywords —
+    this finds non-standard paths like /public/contact-us.php that hardcoded
+    guesses would miss.
+
+    SPA handling: if a page loads with empty body text on `domcontentloaded`,
+    we retry with `networkidle` + a longer wait to let client-side routers
+    finish rendering."""
     if not url or sync_playwright is None:
+        print(f"_scrape_site_text: skipping (url={url!r}, playwright={'available' if sync_playwright else 'MISSING'})")
         return []
     parsed = urlparse(url if "//" in url else "https://" + url)
     base = f"{parsed.scheme}://{parsed.netloc}"
@@ -411,11 +426,62 @@ def _scrape_site_text(url: str, max_pages: int = 6, per_page_chars: int = 12000)
         base = "https://" + (url if "//" in url else url).split("/")[0]
     if not parsed.netloc:
         base = "https://" + url.split("/")[0]
-    candidates = [
-        "", "/", "/about", "/about-us", "/aboutus", "/team", "/our-team",
+
+    # Keywords to match nav links for relevant pages (case-insensitive).
+    _NAV_KEYWORDS = re.compile(
+        r"contact|about\s*us|about|team|our[- ]team|management|leadership|"
+        r"director|founder|career|people|who\s*we\s*are", re.I)
+    # Path segments that hint at contact/about/team pages.
+    _PATH_KEYWORDS = re.compile(
+        r"contact|about|team|management|leadership|director|founder|career|people", re.I)
+
+    # Hardcoded fallback guesses — only used if link discovery doesn't find them.
+    _FALLBACK_PATHS = [
+        "/about", "/about-us", "/aboutus", "/team", "/our-team",
         "/management", "/leadership", "/contact", "/contact-us", "/contactus",
     ]
+
     pages = []
+    seen_urls = set()          # dedupe by resolved URL
+    seen_content_hash = set()  # dedupe by content hash to skip identical pages
+
+    def _load_page(context, page_url: str) -> dict | None:
+        """Load a single URL and return {url, title, text, html} or None."""
+        nonlocal seen_urls, seen_content_hash
+        canonical = page_url.rstrip("/").lower()
+        if canonical in seen_urls:
+            return None
+        seen_urls.add(canonical)
+        try:
+            page = context.new_page()
+            try:
+                page.goto(page_url, timeout=15000, wait_until="domcontentloaded")
+                page.wait_for_timeout(1500)
+                text = (page.inner_text("body") or "").strip()
+
+                # SPA fallback: if body is empty/tiny, retry with networkidle.
+                if len(text) < 80:
+                    try:
+                        page.goto(page_url, timeout=20000, wait_until="networkidle")
+                        page.wait_for_timeout(3000)
+                        text = (page.inner_text("body") or "").strip()
+                    except Exception:
+                        pass
+
+                title = (page.title() or "").strip()
+                html = (page.content() or "")[:500000]
+            finally:
+                page.close()
+        except Exception:
+            return None
+        if len(text) < 80:
+            return None
+        content_hash = hash(text[:2000])
+        if content_hash in seen_content_hash:
+            return None
+        seen_content_hash.add(content_hash)
+        return {"url": page_url, "title": title, "text": text[:per_page_chars], "html": html}
+
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu"])
@@ -427,35 +493,319 @@ def _scrape_site_text(url: str, max_pages: int = 6, per_page_chars: int = 12000)
                 ),
                 ignore_https_errors=True,
             )
-            loaded = 0
-            for path in candidates:
-                if loaded >= max_pages:
-                    break
-                page_url = urljoin(base + "/", path.lstrip("/"))
-                if page_url.rstrip("/") == base.rstrip("/"):
-                    page_url = base + "/"
+
+            # --- Step 1: load homepage ---
+            home_url = base + "/"
+            home_page = context.new_page()
+            discovered_links = []
+            try:
+                home_page.goto(home_url, timeout=15000, wait_until="domcontentloaded")
+                home_page.wait_for_timeout(2000)
+                home_text = (home_page.inner_text("body") or "").strip()
+                if len(home_text) < 80:
+                    try:
+                        home_page.goto(home_url, timeout=20000, wait_until="networkidle")
+                        home_page.wait_for_timeout(3000)
+                        home_text = (home_page.inner_text("body") or "").strip()
+                    except Exception:
+                        pass
+                home_title = (home_page.title() or "").strip()
+                home_html = (home_page.content() or "")[:500000]
+
+                # Discover internal links from the homepage nav/DOM.
                 try:
-                    page = context.new_page()
-                    page.goto(page_url, timeout=20000, wait_until="domcontentloaded")
-                    page.wait_for_timeout(1500)
-                    text = (page.inner_text("body") or "").strip()
-                    title = (page.title() or "").strip()
-                    page.close()
+                    raw_links = home_page.eval_on_selector_all(
+                        "a[href]",
+                        "els => els.map(el => ({href: el.href, text: (el.textContent||'').trim().substring(0,80)}))"
+                    )
+                    base_lower = base.lower()
+                    for lnk in raw_links:
+                        href = (lnk.get("href") or "").strip()
+                        text = (lnk.get("text") or "").strip()
+                        if not href or href.startswith("#") or href.lower() == home_url.rstrip("/").lower():
+                            continue
+                        # Only same-origin links
+                        if not href.lower().startswith(base_lower):
+                            continue
+                        # Skip anchors-only (e.g. https://site.com/#about)
+                        path = urlparse(href).path or ""
+                        if not path or path == "/":
+                            continue
+                        # Match by link text or URL path
+                        if _NAV_KEYWORDS.search(text) or _PATH_KEYWORDS.search(path):
+                            discovered_links.append(href)
                 except Exception:
-                    continue
-                if len(text) < 80:
-                    continue
+                    pass
+            finally:
+                home_page.close()
+
+            # Record homepage
+            seen_urls.add(home_url.rstrip("/").lower())
+            if len(home_text) >= 80:
+                seen_content_hash.add(hash(home_text[:2000]))
                 pages.append({
-                    "url": page_url,
-                    "title": title,
-                    "text": text[:per_page_chars],
+                    "url": home_url, "title": home_title,
+                    "text": home_text[:per_page_chars], "html": home_html,
                 })
-                loaded += 1
+
+            # --- Step 2: scrape discovered links first (highest value) ---
+            # Deduplicate discovered links preserving order.
+            seen_discovered = set()
+            unique_discovered = []
+            for href in discovered_links:
+                canon = href.rstrip("/").lower()
+                if canon not in seen_discovered:
+                    seen_discovered.add(canon)
+                    unique_discovered.append(href)
+
+            for link_url in unique_discovered:
+                if len(pages) >= max_pages:
+                    break
+                result = _load_page(context, link_url)
+                if result:
+                    pages.append(result)
+
+            # --- Step 3: try hardcoded fallback paths for anything not yet covered ---
+            for path in _FALLBACK_PATHS:
+                if len(pages) >= max_pages:
+                    break
+                fallback_url = urljoin(base + "/", path.lstrip("/"))
+                result = _load_page(context, fallback_url)
+                if result:
+                    pages.append(result)
+
             context.close()
             browser.close()
     except Exception as e:
         print(f"scrape_company_website error for {url}: {e}")
+    print(f"_scrape_site_text: {url} → {len(pages)} page(s) scraped"
+          f" (discovered {len(discovered_links)} nav links)")
     return pages
+
+
+# ---------------------------------------------------------------------------
+# Labeled phone extraction — DOM-aware, keeps "what the number is for"
+# ---------------------------------------------------------------------------
+
+# (compiled regex, canonical label) tried in order — most specific first, so a
+# number labelled "head office" isn't downgraded to plain "Office".
+_LABEL_RULES = [
+    (re.compile(r"toll\s*[- ]?free|\b1800\b", re.I), "Toll-free"),
+    (re.compile(r"head\s*office|corporate\s*office|registered\s*office|\bcorp(?:orate)?\b|\bhq\b|head\s*quarters", re.I), "Head Office"),
+    (re.compile(r"whatsapp", re.I), "WhatsApp"),
+    (re.compile(r"mobile|\bcell(?:ular)?\b|\bmob\b", re.I), "Mobile"),
+    (re.compile(r"recruit|carrer|career|vacanc|job\b|\bhr\b", re.I), "HR"),
+    (re.compile(r"sales|\border\b|booking|dealer|distributor|franchise|outlet", re.I), "Sales"),
+    (re.compile(r"support|customer\s*cares?|care\s*line|helpdesk|helpline|complaint|assistance|help\s*line", re.I), "Support"),
+    (re.compile(r"enquir|inquir", re.I), "Enquiry"),
+    (re.compile(r"reception|operator", re.I), "Reception"),
+    (re.compile(r"fax", re.I), "Fax"),
+    (re.compile(r"export|import|international|global", re.I), "Exports"),
+    (re.compile(r"office|landline|\btel(?:ephone)?\b|telephone|phone|\bph\b|call\s*us|contact", re.I), "Office"),
+]
+# Order used to rank labels when the same number is seen more than once —
+# specific beats generic beats fallback.
+_LABEL_RANK = {label: i for i, (_, label) in enumerate(_LABEL_RULES)}
+_LABEL_RANK.setdefault("Office", 999)
+_LABEL_RANK.setdefault("Unlabeled", 9999)
+
+# Element class/id/aria/name attributes that hint a container holds a phone.
+_PHONE_HINT_ATTR = re.compile(
+    r"phone|mobile|tel|fax|contact|call|whatsapp|hotline|helpline|support|sales", re.I)
+
+
+def _classify_label(text: str):
+    """Map free text to a canonical label, or None if it doesn't describe one."""
+    if not text:
+        return None
+    for rx, label in _LABEL_RULES:
+        if rx.search(text):
+            return label
+    return None
+
+
+def _clean_phone(raw: str) -> str:
+    """Display form of a found phone (whitespace-collapsed, original chars)."""
+    return re.sub(r"\s+", " ", raw).strip()
+
+
+def _phone_digits(raw: str) -> str:
+    """Normalized dedupe key: digits only."""
+    return re.sub(r"\D", "", raw or "")
+
+
+def _element_attrs_text(el) -> str:
+    """Join an element's class/id/aria-label/title/data-name into one string."""
+    parts = []
+    cls = el.get("class")
+    if cls:
+        parts.append(" ".join(cls) if isinstance(cls, list) else str(cls))
+    for attr in ("id", "aria-label", "data-label", "data-name", "title", "name", "alt"):
+        v = el.get(attr)
+        if v:
+            parts.append(str(v))
+    return " ".join(parts)
+
+
+def _nearest_heading(el) -> str:
+    """Text of the closest h1-h6 ancestor/self, if any."""
+    cur = el
+    for _ in range(8):
+        if getattr(cur, "name", None) in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            txt = cur.get_text(" ", strip=True)
+            return txt[:120] if txt else ""
+        cur = getattr(cur, "parent", None)
+        if cur is None:
+            break
+    return ""
+
+
+def _preceding_sibling_text(el) -> str:
+    """Text of the previous sibling element(s), up to 3 back — catches the
+    `<dt>Mobile:</dt><dd>+91 ...</dd>` pattern."""
+    node = getattr(el, "previous_sibling", None)
+    for _ in range(3):
+        if node is None:
+            break
+        if getattr(node, "name", None):  # an element, not a bare string
+            txt = node.get_text(" ", strip=True)
+            if txt:
+                return txt
+        node = getattr(node, "previous_sibling", None)
+    return ""
+
+
+def _inline_label(before: str) -> str:
+    """Label from the text immediately preceding a number, e.g. 'Mobile :',
+    'Fax -', 'Sales contact:'. Uses the last 40 chars so a matching word
+    anywhere near the number is caught."""
+    tail = (before or "")[-40:]
+    if not tail.strip() or re.search(r"\d", tail):
+        return None
+    return _classify_label(tail)
+
+
+def _phone_context(el, phone_raw: str) -> str:
+    """Surrounding snippet: text of the innermost container that holds the
+    number, cleaned and truncated."""
+    txt = el.get_text(" ", strip=True) if getattr(el, "get_text", None) else str(el)
+    txt = re.sub(r"\s+", " ", txt).strip()
+    idx = txt.find(phone_raw.strip())
+    if idx < 0:
+        idx = max(0, len(txt) - 120)
+    start = max(0, idx - 60)
+    return txt[start:start + 180]
+
+
+def _add_phone(results: dict, phone_raw: str, label, page_url: str,
+               context: str = "", tel_href: str = ""):
+    """Merge a phone into results: dedupe by digits, keep the higher-ranked
+    label and the first page/context."""
+    digits = _phone_digits(phone_raw)
+    if not digits or len(digits) < 6:
+        return
+    # Near-uniform digit strings (0000100000, 0101010101) are HTML artifacts —
+    # schema markup, aria counters, code samples — not real phone numbers.
+    if len(set(digits)) <= 2:
+        return
+    rec = results.get(digits)
+    if rec is None:
+        results[digits] = {
+            "phone": _clean_phone(phone_raw),
+            "phone_clean": digits,
+            "label": label or "Unlabeled",
+            "page_url": page_url,
+            "context": context or "",
+            "tel_href": tel_href,
+        }
+        return
+    rank_new = _LABEL_RANK.get(label, _LABEL_RANK["Unlabeled"])
+    rank_old = _LABEL_RANK.get(rec["label"], _LABEL_RANK["Unlabeled"])
+    if rank_new < rank_old:
+        rec["label"] = label
+    if not rec.get("tel_href") and tel_href:
+        rec["tel_href"] = tel_href
+    if not rec.get("context") and context:
+        rec["context"] = context
+
+
+def _extract_labeled_phones(pages: list) -> list:
+    """Pull phone numbers out of scraped page HTML along with what each number
+    is for. Sources, in order: tel: links, elements whose class/id/aria hint a
+    phone, then raw regex matches on text nodes — each number gets its label
+    from the DOM around it."""
+    if BeautifulSoup is None:
+        return []
+    results = {}
+    for page in pages or []:
+        html = page.get("html", "")
+        page_url = page.get("url", "")
+        if not html:
+            continue
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+        except Exception:
+            continue
+
+        # 1) tel: anchor links — label from link text / aria-label / parents.
+        for a in soup.find_all("a", href=True):
+            href = (a.get("href") or "").strip()
+            if not href.lower().startswith("tel:"):
+                continue
+            tel_part = href[4:].strip().strip(",").strip()
+            link_text = a.get_text(" ", strip=True)
+            phone_raw = tel_part if _phone_digits(tel_part) else link_text
+            if not _phone_digits(phone_raw):
+                continue
+            label = _inline_label(link_text.split(phone_raw)[0]) if phone_raw in link_text else None
+            if not label:
+                label = _classify_label(link_text)
+            if not label and a.get("aria-label"):
+                label = _classify_label(str(a.get("aria-label")))
+            if not label:
+                label = _classify_label(_element_attrs_text(a.parent) if a.parent else "")
+            ctx = link_text or _phone_context(a, phone_raw)
+            _add_phone(results, phone_raw, label, page_url,
+                       context=ctx, tel_href=href)
+
+        # 2) Elements whose class/id/aria/etc. hint at a phone.
+        for el in soup.find_all(True):
+            attrs = _element_attrs_text(el)
+            if not attrs or not _PHONE_HINT_ATTR.search(attrs):
+                continue
+            text = el.get_text(" ", strip=True)
+            for m in _PHONE_RE.finditer(text):
+                raw = m.group(0)
+                label = _classify_label(attrs)
+                if not label:
+                    label = _classify_label(_element_attrs_text(el.parent) if el.parent else None)
+                if not label:
+                    label = _inline_label(text[:m.start()])
+                _add_phone(results, raw, label, page_url,
+                           context=_phone_context(el, raw))
+
+        # 3) Bare text nodes — regex match + DOM context for the label.
+        for node in soup.find_all(string=lambda s: bool(s) and _PHONE_RE.search(s)):
+            raw = str(node)
+            for m in _PHONE_RE.finditer(raw):
+                if m.group(0).strip() in ("", "0"):
+                    continue
+                el = node.parent
+                label = _inline_label(raw[:m.start()])
+                if not label and el is not None:
+                    label = _classify_label(_element_attrs_text(el))
+                if not label and el is not None:
+                    label = _classify_label(_preceding_sibling_text(el))
+                if not label and el is not None:
+                    label = _classify_label(_nearest_heading(el))
+                    if label is None and _nearest_heading(el):
+                        label = "Unlabeled"
+                if not label:
+                    heading = _nearest_heading(el) if el is not None else ""
+                    label = heading or "Unlabeled"
+                ctx = _phone_context(el, m.group(0)) if el is not None else raw[:180]
+                _add_phone(results, m.group(0), label, page_url, context=ctx)
+    return list(results.values())
 
 
 def _website_people(text: str) -> list:
@@ -518,11 +868,13 @@ async def scrape_company_website_activity(payload: dict) -> dict:
         pages = _scrape_site_text(website)
         if not pages:
             return {"company_name": company_name, "website": website, "pages": [],
-                    "emails": [], "phones": [], "address": "", "financials": [],
+                    "emails": [], "phones": [], "phones_labeled": [],
+                    "address": "", "financials": [],
                     "team_members": [], "raw_text": ""}
         all_text = "\n\n".join(p.get("text", "") for p in pages)
         emails = list(dict.fromkeys(_EMAIL_RE2.findall(all_text)))
         phones = list(dict.fromkeys(m for m in _PHONE_RE.findall(all_text)))
+        phones_labeled = _extract_labeled_phones(pages)
         address = ""
         for line in re.split(r"\n+", all_text):
             if any(h in line.lower() for h in _ADDRESS_HINTS) and re.search(r"\d{5,6}", line):
@@ -539,6 +891,7 @@ async def scrape_company_website_activity(payload: dict) -> dict:
             "pages": [{"url": p["url"], "title": p["title"]} for p in pages],
             "emails": emails[:5],
             "phones": phones[:5],
+            "phones_labeled": phones_labeled,
             "address": address,
             "financials": financials,
             "team_members": _website_people(all_text)[:10],
@@ -1283,6 +1636,24 @@ async def evaluate_and_save_lead_activity(payload: dict) -> dict:
             row.status = "completed"
             row.error = ""
             row.fetched_at = datetime.utcnow()
+            db.commit()
+
+            # Labeled phones (from the company's own website) go to their own
+            # table so each number keeps what it's for. Replace-on-rescrape.
+            labeled_phones = website_data.get("phones_labeled", []) or []
+            db.query(CompanyPhone).filter(
+                CompanyPhone.company_key == company_key).delete(synchronize_session=False)
+            for p in labeled_phones:
+                db.add(CompanyPhone(
+                    company_key=company_key,
+                    phone=p.get("phone", ""),
+                    phone_clean=p.get("phone_clean", ""),
+                    label=p.get("label", "Unlabeled"),
+                    page_url=p.get("page_url", ""),
+                    context=p.get("context", ""),
+                    tel_href=p.get("tel_href", ""),
+                    source="company_website",
+                ))
             db.commit()
             return {"company_key": company_key, "status": "completed"}
         except Exception as e:

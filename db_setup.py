@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from sqlalchemy import create_engine, Column, String, Integer, Date, Boolean, MetaData, Text, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from sqlalchemy.types import DateTime
 
 # 1. Define metadata with the explicit schema
@@ -125,6 +125,24 @@ class WebEvidence(Base):
     fetched_at = Column(DateTime, default=datetime.utcnow)
 
 
+class CompanyPhone(Base):
+    """A phone number found on a company's own website, labelled with what it
+    is for (Mobile, Office, Fax, Sales, Support, ...). One row per unique phone
+    per company; ``phone_clean`` is the dedupe key (digits only)."""
+    __tablename__ = 'company_phones'
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_key = Column(String(255), index=True)
+    phone = Column(Text)                  # as shown on the site (pretty/display form)
+    phone_clean = Column(Text, index=True)  # normalized digits only (dedupe key)
+    label = Column(Text, default='')      # Mobile | Office | Fax | Sales | Support | ...
+    page_url = Column(Text, default='')   # page the number was found on
+    context = Column(Text, default='')    # surrounding text snippet from the HTML
+    tel_href = Column(Text, default='')   # original tel: link if it came from one
+    source = Column(String(20), default='company_website')
+    found_at = Column(DateTime, default=datetime.utcnow)
+
+
 class CompanyLead(Base):
     """Lead research outcome for one company: firmographic profile, decision
     makers, activity signals and QMS-relevant trigger events."""
@@ -148,6 +166,8 @@ class CompanyLead(Base):
     error = Column(Text, default='')
     workflow_id = Column(Text, default='')
     fetched_at = Column(DateTime, default=datetime.utcnow)
+
+    phones = relationship("CompanyPhone", primaryjoin="CompanyLead.company_key == CompanyPhone.company_key", foreign_keys="CompanyPhone.company_key")
 
 
 def init_db():
@@ -197,6 +217,8 @@ def init_db():
         "ADD COLUMN IF NOT EXISTS scraped_data JSONB DEFAULT '{}'",
         "ALTER TABLE sdr_data.company_leads "
         "ADD COLUMN IF NOT EXISTS corporate_registry JSONB DEFAULT '{}'",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_company_phones_key_phone "
+        "ON sdr_data.company_phones (company_key, phone_clean)",
     ]
     for sql in migrations:
         with engine.connect() as conn:

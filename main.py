@@ -11,7 +11,7 @@ import os
 import re
 from contextlib import asynccontextmanager
 
-from db_setup import SessionLocal, RegulatoryEvent, RegulatoryEvidence, EnrichmentCheck, WebEvidence, CompanyLead
+from db_setup import SessionLocal, RegulatoryEvent, RegulatoryEvidence, EnrichmentCheck, WebEvidence, CompanyLead, CompanyPhone
 from temporal_tasks import MANDATE_START, recency_weight, repeat_offender_bonus, mfr_key
 from company_names import clean_company_name, PAREN
 from paper_category import assess_paper_category
@@ -1207,7 +1207,28 @@ def _lead_payload(r) -> dict:
         "error": r.error,
         "workflow_id": r.workflow_id,
         "fetched_at": str(r.fetched_at) if r.fetched_at else None,
+        "phones_labeled": _lead_phones(r.company_key),
     }
+
+
+def _lead_phones(company_key: str) -> list:
+    """Labeled phone numbers scraped from the company's own website."""
+    db = SessionLocal()
+    try:
+        rows = db.query(CompanyPhone)\
+            .filter(CompanyPhone.company_key == company_key)\
+            .order_by(CompanyPhone.label, CompanyPhone.found_at)\
+            .all()
+        return [{
+            "phone": p.phone,
+            "label": p.label,
+            "page_url": p.page_url,
+            "context": p.context,
+            "tel_href": p.tel_href,
+            "found_at": str(p.found_at) if p.found_at else None,
+        } for p in rows]
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
