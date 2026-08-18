@@ -10,8 +10,14 @@ should work at the end of it.
 
 A **pharma regulatory intelligence platform** (AIVOA Sentinel). It:
 
-1. **Scrapes** CDSCO (India) drug-failure notices, FDA warning letters, and
-   EudraGMDP GMP non-compliance statements.
+1. **Scrapes** three regulators into **separate signal areas** (each with its
+   own database table + dashboard page):
+   - **India — CDSCO** drug-failure / NSQ notices → `regulatory_events`
+     (existing pipeline).
+   - **USA — FDA** via the official **openFDA** API (drug enforcement, FAERS,
+     device recalls) → `fda_events`.
+   - **EU — EMA** via the ePI / UPD APIs plus **EudraGMDP** GMP
+     non-compliance statements → `eu_events`.
 2. **Enriches** the raw data with AI (Groq) — paper-QMS failure detection,
    scoring, web evidence, lead research, campaigns.
 3. Serves it via a **FastAPI** dashboard (`main.py`) and an **MCP server**
@@ -19,6 +25,34 @@ A **pharma regulatory intelligence platform** (AIVOA Sentinel). It:
 
 The heavy lifting (scraping, LLM calls, web search) runs as **Temporal
 workflows** on two worker task queues.
+
+### What's new — dedicated FDA (USA) & EU signal areas
+
+Previously all international data shared the CDSCO `regulatory_events` table.
+It is now split into **purpose-built tables** and **dedicated dashboard pages**
+so FDA and EU signals are fully separate from India:
+
+- **`fda_events`** table + **`/fda`** dashboard page (openFDA: `FDA_Drug`,
+  `FDA_FAERS`, `FDA_Device`).
+- **`eu_events`** table + **`/eu`** dashboard page (EMA `EMA_ePI`, `EMA_UPD`,
+  `EudraGMDP`).
+- New adapters: `adapters/openfda.py` (live, keyed by `OPENFDA_API`),
+  `adapters/ema_epi.py`, `adapters/ema_upd.py` (need a registered EMA client —
+  return empty until credentials are supplied), plus the existing EudraGMDP
+  Playwright adapter.
+- New Temporal workflows (`enricher_worker.py`, task queue
+  `enrichment-task-queue`): `FDAEScraperWorkflow` (scrape → route to the right
+  table) and `FADEnrichmentWorkflow` (Groq paper-QMS analysis + scoring).
+- New REST endpoints under `/api/v1/fda/...`, `/api/v1/eu/...` and
+  `/api/v1/fda-eu/...` (see §12). `signal_scoring` gained a
+  `_base_score_for_event_type` helper so international findings score on the
+  same 0–100 scale as CDSCO.
+- `aiohttp` added to `requirements.txt`.
+
+> FDA data works out of the box with `OPENFDA_API`. EMA ePI/UPD and EudraGMDP
+> require registered credentials to return records (graceful empty results
+> otherwise). The Temporal server must be running to actually *run* the
+> workflows; the activities can also be exercised directly for testing.
 
 ### Components / ports
 
@@ -35,7 +69,7 @@ workflows** on two worker task queues.
 | Task queue | Worker file | Workflows it runs |
 |---|---|---|
 | `scraper-task-queue` | `worker.py` | `CDSCOScraperWorkflow`, `CDSCOEnrichmentWorkflow`, failure-mode & Schedule-M backfills |
-| `enrichment-task-queue` | `enricher_worker.py` | `EnrichmentWorkflow`, `WebEvidenceWorkflow`, `LeadResearchWorkflow`, `CampaignWorkflow`, `RegulatoryFullPullWorkflow`, `ScrapedRecordCheckWorkflow` |
+| `enrichment-task-queue` | `enricher_worker.py` | `EnrichmentWorkflow`, `WebEvidenceWorkflow`, `LeadResearchWorkflow`, `CampaignWorkflow`, `RegulatoryFullPullWorkflow`, `ScrapedRecordCheckWorkflow`, `FDAEScraperWorkflow`, `FADEnrichmentWorkflow` |
 
 ### Environment variables used by the code
 
@@ -45,6 +79,7 @@ workflows** on two worker task queues.
 | `TEMPORAL_HOST` | No | Temporal gRPC address, default `localhost:7233`. Use `temporal:7233` inside Docker. |
 | `GROQ_API_KEY` | No (has fallback) | LLM classification for enrichment. Set it for real results. |
 | `TAVILY_API_KEY` | No | Web-evidence + lead-research web search. |
+| `OPENFDA_API` | **Yes (for FDA)** | openFDA API key (https://open.fda.gov/). Required by `adapters/openfda.py` to pull FDA drug/device/FAERS data into `fda_events`. |
 | `VIEW_ONLY` | No | `1` = read-only deploy (blocks all scrape/enrich/dispatch triggers). Default `0`. |
 | `ENABLE_MCP` | No | `1` = mount MCP at `/mcp` (default). Set `0` to disable. |
 
@@ -188,9 +223,9 @@ Database schema 'sdr_data' and tables created successfully.
 ```
 
 This creates the `sdr_data` schema and all tables
-(`regulatory_events`, `regulatory_evidence`, `enrichment_checks`,
-`web_evidence`, `scraped_regulatory_records`, `company_leads`, `campaigns`,
-…). It is **idempotent** — safe to re-run.
+(`regulatory_events`, `fda_events`, `eu_events`, `regulatory_evidence`,
+`enrichment_checks`, `web_evidence`, `scraped_regulatory_records`,
+`company_leads`, `campaigns`, …). It is **idempotent** — safe to re-run.
 
 ---
 
@@ -300,6 +335,33 @@ curl -X POST http://localhost:5000/api/v1/regulatory/trigger \
 curl -s http://localhost:5000/api/v1/regulatory/status
 ```
 
+### FDA (USA) + EU dedicated areas
+
+These write to their **own** tables (`fda_events` / `eu_events`), not
+`regulatory_events`.
+
+```bash
+# Scrape openFDA into fda_events (source: openfda | ema_epi | ema_upd | eudragmdp | all)
+curl -X POST http://localhost:5000/api/v1/fda-eu/scraper/trigger \
+  -H 'Content-Type: application/json' \
+  -d '{"source":"openfda","from_date":"2024-01-01","to_date":"2024-12-31"}'
+curl -s http://localhost:5000/api/v1/fda-eu/scraper/status
+
+# LLM enrichment + scoring over the FDA/EU rows
+curl -X POST http://localhost:5000/api/v1/fda-eu/enrichment/trigger \
+  -H 'Content-Type: application/json' -d '{}'
+curl -s http://localhost:5000/api/v1/fda-eu/enrichment/status
+
+# Stats + signal listings (separate per region)
+curl -s http://localhost:5000/api/v1/fda-eu/records/stats
+curl -s "http://localhost:5000/api/v1/fda/signals?page=1"
+curl -s "http://localhost:5000/api/v1/eu/signals?page=1"
+```
+
+Dashboard pages: **`/fda`** (USA/FDA signals) and **`/eu`** (EU/EMA signals),
+both linked from the main dashboard header. Each has its own scrape / enrich
+buttons and searchable, scored signal cards.
+
 ---
 
 ## 13. MCP server (for AI assistants / Claude / IDEs)
@@ -338,6 +400,8 @@ Resources: `resource_events`, `resource_event`, `resource_event_evidence`,
 | "MCP server failed to mount" | `pip install -r requirements_mcp.txt` |
 | Temporal can't connect from Docker | Use `TEMPORAL_HOST=temporal:7233` (compose hostname), not `localhost` |
 | Schema missing in Postgres | `python db_setup.py` (idempotent) |
+| FDA scrape inserts 0 rows / 401/403 | `OPENFDA_API` not set or invalid — set it in `.env` (openFDA keys are free) |
+| EMA ePI/UPD returns empty | These APIs need a **registered EMA client**; without credentials the adapters return `[]` gracefully. EudraGMDP needs Chromium + a browser session. |
 
 ---
 
