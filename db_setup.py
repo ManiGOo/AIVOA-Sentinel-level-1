@@ -29,23 +29,78 @@ SessionLocal = sessionmaker(bind=engine)
 
 class RegulatoryEvent(Base):
     __tablename__ = 'regulatory_events'
-    
+
     event_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     company_id = Column(UUID(as_uuid=True), nullable=True) # Populated later via Entity Resolution
     regulator = Column(String(50), default="CDSCO")
     event_type = Column(String(100)) # 'NSQ_DRUG' or 'SPURIOUS_DRUG'
-    
+
     raw_details = Column(JSONB)      # The raw JSON from CDSCO
     llm_analysis = Column(JSONB, nullable=True) # The JSON output from Groq/Qwen
     score = Column(Integer, default=0)
     reporting_source = Column(Text, nullable=True, server_default='')
     reported_by = Column(Text, nullable=True, server_default='')
-    
+
     event_date = Column(Date, default=datetime.utcnow)
 
     paper_evidence_class = Column(String(20), default='')  # '' | explicit | deductive | none
     paper_confidence = Column(Integer, default=0)          # 0-100
     paper_proxies = Column(JSONB, default=list)            # satisfied proxy labels
+
+
+class FDAEvent(Base):
+    """Separate signal area for UNITED STATES (FDA) regulatory actions.
+
+    Deliberately NOT merged into ``regulatory_events`` (which is the India /
+    CDSCO signal area). FDA data from openFDA (enforcement recalls, FAERS
+    adverse events, device recalls) and FDA warning letters / 483s land here so
+    the US region has its own dashboard, ranking and scoring independent of
+    India. Same scoring semantics as RegulatoryEvent.
+    """
+    __tablename__ = 'fda_events'
+
+    fda_event_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_type = Column(String(100), default='')  # FDA_Drug | FDA_Device | FDA_FAERS | FDA_WarningLetter | FDA_483
+    firm_name = Column(Text, default='')
+    product_name = Column(Text, default='')        # drug / device / product description
+    finding_date = Column(Date, nullable=True)
+    url = Column(Text, default='')
+    subject = Column(Text, default='')             # recall number / report id / letter subject
+    evidence_text = Column(Text, default='')       # reason / statement body snippet
+    llm_analysis = Column(JSONB, nullable=True)    # paper-QMS / failure-mode verdict
+    score = Column(Integer, default=0)
+    paper_qms_score = Column(Integer, default=0)
+    reporting_source = Column(Text, default='')   # openfda | fda_warning_letter | fda_483
+    event_date = Column(Date, default=datetime.utcnow)
+    raw_details = Column(JSONB, default=dict)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EUEvent(Base):
+    """Separate signal area for the EUROPEAN UNION (EMA / EudraGMDP).
+
+    Mirrors ``FDAEvent`` but for EU centrally-authorised medicines, national
+    authorisations, GMP non-compliance statements and variations. Kept out of
+    ``regulatory_events`` so the EU region is its own dashboard area.
+    """
+    __tablename__ = 'eu_events'
+
+    eu_event_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_type = Column(String(100), default='')  # ema_epi | ema_upd | EudraGMDP | EMA_Referral | EMA_Shortage
+    firm_name = Column(Text, default='')
+    product_name = Column(Text, default='')
+    finding_date = Column(Date, nullable=True)
+    url = Column(Text, default='')
+    subject = Column(Text, default='')
+    evidence_text = Column(Text, default='')
+    llm_analysis = Column(JSONB, nullable=True)
+    score = Column(Integer, default=0)
+    paper_qms_score = Column(Integer, default=0)
+    reporting_source = Column(Text, default='')
+    event_date = Column(Date, default=datetime.utcnow)
+    raw_details = Column(JSONB, default=dict)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
 
 class RegulatoryEvidence(Base):
     """External regulatory evidence (FDA warning letters, EudraGMDP

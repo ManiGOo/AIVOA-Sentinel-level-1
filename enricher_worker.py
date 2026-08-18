@@ -29,6 +29,14 @@ from regulatory_scrape_tasks import (
     save_scraped_records,
     link_scraped_records_for_firm,
 )
+from fda_eu_scrape_tasks import (
+    FDAEScraperWorkflow,
+    FDAEEnrichmentWorkflow,
+    scrape_fda_e_records,
+    save_fda_e_raw,
+    load_fda_e_enrichment_candidates,
+    apply_fda_e_enrichment_to_db,
+)
 
 
 async def main():
@@ -38,7 +46,8 @@ async def main():
         client,
         task_queue="enrichment-task-queue",
         workflows=[EnrichmentWorkflow, WebEvidenceWorkflow, LeadResearchWorkflow,
-                   RegulatoryFullPullWorkflow, ScrapedRecordCheckWorkflow],
+                   RegulatoryFullPullWorkflow, ScrapedRecordCheckWorkflow,
+                   FDAEScraperWorkflow, FDAEEnrichmentWorkflow],
         activities=[
             fetch_external_evidence,
             generate_queries_activity,
@@ -55,6 +64,10 @@ async def main():
             scrape_regulatory_records,
             save_scraped_records,
             link_scraped_records_for_firm,
+            scrape_fda_e_records,
+            save_fda_e_raw,
+            load_fda_e_enrichment_candidates,
+            apply_fda_e_enrichment_to_db,
         ],
         activity_executor=ThreadPoolExecutor(max_workers=20),
     )

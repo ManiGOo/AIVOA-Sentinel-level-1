@@ -118,7 +118,7 @@ def _is_paper_event(event) -> bool:
 def _event_max_possible(event, counts: dict) -> int:
     """Grounded score ceiling for ONE event, identical to the card formula in
     _build_signal_card: only the bonuses this record can actually earn."""
-    base = 40 if event.event_type == 'SPURIOUS_DRUG' else 20
+    base = _base_score_for_event_type(event.event_type)
     analysis = event.llm_analysis or {}
     mandate_flags = [k for k in ('violates_rule_96', 'violates_sub_rule_7', 'violates_schedule_h2')
                      if analysis.get(k)]
@@ -128,6 +128,22 @@ def _event_max_possible(event, counts: dict) -> int:
     repeat_bonus = repeat_offender_bonus(prior)
     recency = recency_weight(event.event_date)
     return round((base + 30 + mandate_bonus) * recency) + repeat_bonus + 25
+
+
+def _base_score_for_event_type(event_type: str) -> int:
+    """Base score by event type. FDA/EU enforcement = 40, adverse events = 30,
+    shortages = 20, others = 20 (matches CDSCO NSQ)."""
+    if event_type == 'SPURIOUS_DRUG':
+        return 40
+    if event_type in ('openfda', 'FDA_Drug', 'FDA_Device'):
+        return 40
+    if event_type == 'FDA_FAERS':
+        return 30
+    if event_type in ('ema_epi', 'EMA_ePI', 'EMA_Referral', 'EMA_Shortage'):
+        return 30
+    if event_type in ('ema_upd', 'EMA_UPD', 'EMA_Variation', 'EudraGMDP'):
+        return 40
+    return 20
 
 
 def _web_evidence_bonus(items: list) -> int:
@@ -174,7 +190,7 @@ def _build_signal_card(event, counts, checks_by_key, evidence_by_key, web_by_key
             }
 
     prior = max(counts.get(key, 0) - 1, 0)
-    base = 40 if event.event_type == 'SPURIOUS_DRUG' else 20
+    base = _base_score_for_event_type(event.event_type)
     pa = assess_paper_category(
         ckey,
         (event.raw_details or {}).get("reason", ""),

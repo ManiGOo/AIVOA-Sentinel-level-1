@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FDA Signal Area — AIVOA Sentinel</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+            color: #f8fafc;
+            min-height: 100vh;
+            font-family: 'Inter', sans-serif;
+        }
+        .glass-panel {
+            background: rgba(31, 41, 55, 0.7);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 1rem;
+        }
+        .fda-card { transition: all 0.3s ease; }
+        .fda-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 10px 25px -5px rgba(59, 130, 246, 0.35);
+            border-color: rgba(59, 130, 246, 0.5);
+        }
+    </style>
+</head>
+<body class="p-8">
+    <div class="max-w-7xl mx-auto">
+        <header class="flex justify-between items-center mb-10">
+            <div>
+                <a href="/" class="text-sm text-slate-400 hover:text-white">&larr; Back to Sentinel</a>
+                <h1 class="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-indigo-500 mt-2">
+                    United States — FDA Signal Area
+                </h1>
+                <p class="text-slate-400 mt-2">openFDA enforcement, FAERS &amp; device recall signals (separate from India/CDSCO)</p>
+            </div>
+            <div class="flex items-center gap-3">
+                <button onclick="triggerScrape('openfda')" class="px-5 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-lg font-semibold shadow-lg shadow-blue-500/30 hover:shadow-blue-500/50 transition-all">
+                    Scrape openFDA
+                </button>
+                <button onclick="triggerEnrich()" class="px-5 py-3 bg-gradient-to-r from-slate-700 to-slate-600 rounded-lg font-semibold hover:shadow-black/50 transition-all">
+                    Run Enrichment
+                </button>
+            </div>
+        </header>
+
+        <div id="notif" class="hidden mb-8 p-4 bg-green-900/50 border border-green-500/30 rounded-lg text-green-300"></div>
+
+        <div id="statusArea" class="hidden mb-8 glass-panel p-5 border-l-4 border-l-blue-500"></div>
+
+        <div class="glass-panel p-6 mb-6">
+            <div class="flex flex-wrap items-center gap-3 mb-4">
+                <input type="search" id="searchInput" oninput="debouncedSearch()" placeholder="Search firm, product, evidence..."
+                       class="flex-1 min-w-[220px] px-3 py-2 bg-slate-800/70 border border-slate-700 rounded-lg text-sm text-slate-300 focus:outline-none focus:border-blue-500">
+                <label class="flex items-center gap-2 text-sm text-slate-300">Min Score
+                    <input type="number" id="minScore" oninput="resetAndRender()" value="0" min="0" max="100"
+                           class="w-20 px-2 py-1.5 bg-slate-800/70 border border-slate-700 rounded-lg text-sm text-slate-300 focus:outline-none focus:border-blue-500">
+                </label>
+                <label class="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                    <input type="checkbox" id="paperOnly" onchange="resetAndRender()" class="accent-blue-500 w-4 h-4"> Paper-QMS only
+                </label>
+                <button onclick="resetAndRender()" class="text-sm text-slate-400 hover:text-white">Refresh</button>
+                <span id="statBadge" class="text-xs font-bold text-blue-300 bg-blue-900/40 border border-blue-700/50 rounded-full px-2 py-0.5"></span>
+            </div>
+            <div id="cards" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div class="col-span-full text-center py-10 text-slate-500">Loading FDA signals…</div>
+            </div>
+            <div class="flex items-center justify-between mt-6">
+                <span id="pageInfo" class="text-sm text-slate-400"></span>
+                <div class="flex items-center gap-2">
+                    <button id="prevBtn" onclick="prevPage()" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded text-sm font-semibold disabled:opacity-40">‹ Prev</button>
+                    <button id="nextBtn" onclick="nextPage()" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded text-sm font-semibold disabled:opacity-40">Next ›</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const PAGE_SIZE = 30;
+        let currentPage = 1, totalPages = 1, totalCount = 0;
+        let searchTimer = null;
+
+        const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+        function debouncedSearch() { clearTimeout(searchTimer); searchTimer = setTimeout(resetAndRender, 400); }
+        function resetAndRender() { currentPage = 1; fetchSignals(); }
+        function prevPage() { if (currentPage > 1) { currentPage--; fetchSignals(); } }
+        function nextPage() { if (currentPage < totalPages) { currentPage++; fetchSignals(); } }
+
+        function buildUrl() {
+            const p = new URLSearchParams();
+            p.set('page', currentPage);
+            p.set('page_size', PAGE_SIZE);
+            const q = document.getElementById('searchInput').value.trim();
+            const ms = parseInt(document.getElementById('minScore').value || '0', 10);
+            if (ms > 0) p.set('min_score', ms);
+            if (q) p.set('q', q);
+            return '/api/v1/fda/signals?' + p.toString();
+        }
+
+        async function fetchSignals() {
+            try {
+                const res = await fetch(buildUrl());
+                const data = await res.json();
+                totalCount = data.total || 0;
+                totalPages = Math.max(data.pages || 1, 1);
+                currentPage = Math.min(Math.max(data.page || 1, 1), totalPages);
+                document.getElementById('statBadge').textContent = (data.total || 0) + ' FDA signals';
+                const stats = await (await fetch('/api/v1/fda/stats')).json();
+                renderCards(data.items || [], stats);
+            } catch (e) {
+                document.getElementById('cards').innerHTML = '<div class="col-span-full text-center py-10 text-red-400">Failed to load. Is the backend running?</div>';
+            }
+        }
+
+        function renderCards(items, stats) {
+            const cards = document.getElementById('cards');
+            const paperOnly = document.getElementById('paperOnly').checked;
+            const filtered = paperOnly ? items.filter(i => i.is_paper_qms) : items;
+            if (!filtered.length) {
+                cards.innerHTML = '<div class="col-span-full text-center py-10 text-slate-500">No FDA signals match the current filters.</div>';
+                document.getElementById('pageInfo').textContent = '0 results';
+                document.getElementById('prevBtn').disabled = true;
+                document.getElementById('nextBtn').disabled = true;
+                return;
+            }
+            const start = (currentPage - 1) * PAGE_SIZE;
+            document.getElementById('pageInfo').textContent = `Page ${currentPage} / ${totalPages} · ${totalCount} total`;
+            document.getElementById('prevBtn').disabled = currentPage === 1;
+            document.getElementById('nextBtn').disabled = currentPage >= totalPages;
+
+            cards.innerHTML = '';
+            filtered.forEach(it => {
+                const llm = it.llm_analysis || {};
+                const paper = it.is_paper_qms;
+                const reason = llm.reason || (it.evidence_text ? it.evidence_text.slice(0, 240) : '');
+                const html = `
+                <div class="fda-card glass-panel p-5 border ${paper ? 'border-blue-700/60' : 'border-slate-700/50'}">
+                    <div class="flex items-start justify-between gap-3 mb-2">
+                        <div class="min-w-0">
+                            <h3 class="font-semibold text-base text-white leading-snug truncate">${esc(it.firm_name || 'Unknown firm')}</h3>
+                            <p class="text-sm text-slate-400 truncate">${esc(it.product_name || '—')}</p>
+                        </div>
+                        <span class="shrink-0 px-2 py-1 rounded-lg text-xs font-bold ${paper ? 'bg-blue-900/40 text-blue-300 border border-blue-700/50' : 'bg-slate-800/70 text-slate-400 border border-slate-700'}">
+                            ${it.score || 0}
+                        </span>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-1.5 mb-3">
+                        <span class="px-2 py-0.5 text-[10px] rounded border border-slate-700 bg-slate-800/50 text-slate-400 uppercase tracking-wide">${esc(it.event_type || '')}</span>
+                        ${paper ? '<span class="px-2 py-0.5 text-[10px] rounded border border-blue-700/50 bg-blue-900/20 text-blue-300">PAPER-QMS</span>' : ''}
+                        ${it.finding_date ? `<span class="px-2 py-0.5 text-[10px] rounded border border-slate-700 bg-slate-800/50 text-slate-400">${esc(it.finding_date)}</span>` : ''}
+                    </div>
+                    <p class="text-sm text-slate-300 mb-3">${esc(reason)}</p>
+                    <div class="flex items-center justify-between text-xs text-slate-500">
+                        <span>${esc(it.reporting_source || 'openFDA')}</span>
+                        ${it.url ? `<a href="${esc(it.url)}" target="_blank" class="text-blue-400 hover:text-blue-300">source ↗</a>` : ''}
+                    </div>
+                </div>`;
+                cards.insertAdjacentHTML('beforeend', html);
+            });
+        }
+
+        function flash(msg) {
+            const n = document.getElementById('notif');
+            n.textContent = msg;
+            n.classList.remove('hidden');
+            setTimeout(() => n.classList.add('hidden'), 5000);
+        }
+
+        async function triggerScrape(source) {
+            flash('Starting openFDA scrape workflow…');
+            try {
+                const res = await fetch('/api/v1/fda-eu/scraper/trigger', {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({ source })
+                });
+                const data = await res.json();
+                flash(data.message || 'Scrape started');
+                pollStatus();
+            } catch (e) { flash('Failed to start scrape'); }
+        }
+
+        async function triggerEnrich() {
+            flash('Starting FDA enrichment workflow…');
+            try {
+                const res = await fetch('/api/v1/fda-eu/enrichment/trigger', {
+                    method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}'
+                });
+                const data = await res.json();
+                flash(data.message || 'Enrichment started');
+                pollStatus();
+            } catch (e) { flash('Failed to start enrichment'); }
+        }
+
+        async function pollStatus() {
+            const area = document.getElementById('statusArea');
+            area.classList.remove('hidden');
+            const deadline = Date.now() + 6 * 60 * 1000;
+            while (Date.now() < deadline) {
+                await new Promise(r => setTimeout(r, 5000));
+                try {
+                    const s = await (await fetch('/api/v1/fda-eu/scraper/status')).json();
+                    const runs = s.running || [];
+                    if (!runs.length) { area.classList.add('hidden'); fetchSignals(); return; }
+                    area.innerHTML = runs.map(r => `
+                        <div class="text-sm text-slate-300"><span class="text-blue-300 font-mono">${esc(r.source || '')}</span>
+                        — ${r.total || 0} found, ${r.processed || 0} processed
+                        <span class="text-slate-500">${(r.warnings||[]).slice(-1)[0]||''}</span></div>`).join('');
+                } catch (e) {}
+            }
+            area.classList.add('hidden');
+        }
+
+        fetchSignals();
+    </script>
+</body>
+</html>

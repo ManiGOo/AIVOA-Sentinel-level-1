@@ -11,7 +11,7 @@ import os
 import re
 from contextlib import asynccontextmanager
 
-from db_setup import SessionLocal, RegulatoryEvent, RegulatoryEvidence, EnrichmentCheck, WebEvidence, CompanyLead, CompanyPhone
+from db_setup import SessionLocal, RegulatoryEvent, RegulatoryEvidence, EnrichmentCheck, WebEvidence, CompanyLead, CompanyPhone, FDAEvent, EUEvent
 from temporal_tasks import MANDATE_START, recency_weight, repeat_offender_bonus, mfr_key
 from company_names import clean_company_name, PAREN
 from paper_category import assess_paper_category
@@ -471,6 +471,20 @@ def serve_company_frontend(path: str = ""):
     """SPA shell: the router in company-view.js reads location.pathname and
     renders the directory / individual company page client-side."""
     return FileResponse("static/index.html")
+
+
+@app.get("/fda")
+@app.get("/fda/{path:path}")
+def serve_fda_frontend(path: str = ""):
+    """Dedicated UNITED STATES (FDA) signal area front-end."""
+    return FileResponse("static/fda-view.html")
+
+
+@app.get("/eu")
+@app.get("/eu/{path:path}")
+def serve_eu_frontend(path: str = ""):
+    """Dedicated EUROPEAN UNION (EMA / EudraGMDP) signal area front-end."""
+    return FileResponse("static/eu-view.html")
 
 
 @app.post("/api/v1/campaigns/{event_id}/approve")
@@ -969,6 +983,228 @@ async def check_scraped_records(req: RegulatoryCheckRequest,
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# ---------------------------------------------------------------------------
+# FDA (USA) + EU separate signal areas — openFDA / EMA / EudraGMDP
+# ---------------------------------------------------------------------------
+
+FDA_E_SOURCES = ("openfda", "ema_epi", "ema_upd", "eudragmdp", "all")
+
+
+class FDAEScraperRequest(BaseModel):
+    source: str = "openfda"          # openfda | ema_epi | ema_upd | eudragmdp | all
+    from_date: str = "2022-01-01"
+    to_date: str = "2026-12-31"
+    max_records: int = 10000
+
+
+@app.post("/api/v1/fda-eu/scraper/trigger")
+async def trigger_fda_e_scraper(req: Optional[FDAEScraperRequest] = None):
+    """Start the FDAEScraperWorkflow to pull openFDA + EMA ePI/UPD + EudraGMDP
+    data into their dedicated areas: FDA -> fda_events, EU -> eu_events."""
+    req = req or FDAEScraperRequest()
+    if VIEW_ONLY:
+        raise HTTPException(status_code=403, detail="Scraping disabled in view-only mode.")
+    if req.source not in FDA_E_SOURCES:
+        raise HTTPException(status_code=400, detail=f"source must be one of {FDA_E_SOURCES}")
+    try:
+        client = await Client.connect(os.environ.get("TEMPORAL_HOST", "localhost:7233"))
+        workflow_id = f"fdae-scraper-{req.source}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+        handle = await client.start_workflow(
+            "FDAEScraperWorkflow",
+            args=[req.source, req.from_date, req.to_date, req.max_records],
+            id=workflow_id,
+            task_queue="enrichment-task-queue",
+        )
+        return {"status": "SUCCESS", "message": f"FDA/EU scraper started", "workflow_id": handle.id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/fda-eu/scraper/status")
+async def fda_e_scraper_status():
+    """Poll running FDAEScraperWorkflow(s): source, total, processed."""
+    client = await Client.connect(os.environ.get("TEMPORAL_HOST", "localhost:7233"))
+    running = []
+    async for e in client.list_workflows(
+        query="WorkflowType = 'FDAEScraperWorkflow' AND ExecutionStatus = 'Running'",
+        limit=10,
+    ):
+        try:
+            handle = client.get_workflow_handle(e.id)
+            progress = await handle.query("progress")
+        except Exception:
+            progress = {}
+        running.append({"workflow_id": e.id, **progress})
+    return {"running": running}
+
+
+class FDAEEnrichmentRequest(BaseModel):
+    source_filter: str = ""          # "" = all FDA/EU sources
+    year_start: str = ""
+    year_end: str = ""
+    only_missing: bool = True
+    limit: Optional[int] = None
+
+
+@app.post("/api/v1/fda-eu/enrichment/trigger")
+async def trigger_fda_e_enrichment(req: Optional[FDAEEnrichmentRequest] = None):
+    """Start the FDAEEnrichmentWorkflow to run LLM analysis + scoring
+    over FDA (fda_events) + EU (eu_events) rows."""
+    req = req or FDAEEnrichmentRequest()
+    if VIEW_ONLY:
+        raise HTTPException(status_code=403, detail="Enrichment disabled in view-only mode.")
+    try:
+        client = await Client.connect(os.environ.get("TEMPORAL_HOST", "localhost:7233"))
+        workflow_id = f"fdae-enrichment-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+        handle = await client.start_workflow(
+            "FDAEEnrichmentWorkflow",
+            args=[req.source_filter, req.year_start, req.year_end, req.only_missing, req.limit],
+            id=workflow_id,
+            task_queue="enrichment-task-queue",
+        )
+        return {"status": "SUCCESS", "message": "FDA/EU enrichment started", "workflow_id": handle.id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/fda-eu/enrichment/status")
+async def fda_e_enrichment_status():
+    """Poll running FDAEEnrichmentWorkflow(s): phase, total, processed."""
+    client = await Client.connect(os.environ.get("TEMPORAL_HOST", "localhost:7233"))
+    running = []
+    async for e in client.list_workflows(
+        query="WorkflowType = 'FDAEEnrichmentWorkflow' AND ExecutionStatus = 'Running'",
+        limit=10,
+    ):
+        try:
+            handle = client.get_workflow_handle(e.id)
+            progress = await handle.query("progress")
+        except Exception:
+            progress = {}
+        running.append({"workflow_id": e.id, **progress})
+    return {"running": running}
+
+
+def _international_event_card(ev, region: str) -> dict:
+    """Build a signal-card dict for an FDAEvent / EUEvent row."""
+    llm = ev.llm_analysis or {}
+    return {
+        "id": str(getattr(ev, "fda_event_id", None) or getattr(ev, "eu_event_id", None)),
+        "region": region,
+        "event_type": ev.event_type or "",
+        "firm_name": ev.firm_name or "",
+        "product_name": ev.product_name or "",
+        "finding_date": str(ev.finding_date) if ev.finding_date else "",
+        "url": ev.url or "",
+        "subject": ev.subject or "",
+        "evidence_text": (ev.evidence_text or "")[:600],
+        "score": ev.score or 0,
+        "paper_qms_score": ev.paper_qms_score or 0,
+        "is_paper_qms": bool(llm.get("is_paper_qms")),
+        "llm_analysis": llm,
+        "reporting_source": ev.reporting_source or "",
+    }
+
+
+@app.get("/api/v1/fda/signals")
+def fda_signals(page: int = 1, page_size: int = 30, q: str = None,
+                min_score: int = 0, db: Session = Depends(get_db)):
+    """Dedicated UNITED STATES (FDA) signal area — lists fda_events as cards."""
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 200)
+    query = db.query(FDAEvent)
+    if q:
+        like = f"%{q.strip().lower()}%"
+        query = query.filter(
+            or_(func.lower(FDAEvent.firm_name).like(like),
+                func.lower(FDAEvent.product_name).like(like),
+                func.lower(FDAEvent.evidence_text).like(like)))
+    if min_score:
+        query = query.filter(FDAEvent.score >= min_score)
+    total = query.count()
+    rows = query.order_by(FDAEvent.score.desc())\
+        .offset((page - 1) * page_size).limit(page_size).all()
+    return {
+        "region": "USA / FDA",
+        "items": [_international_event_card(r, "fda") for r in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": (total + page_size - 1) // page_size,
+    }
+
+
+@app.get("/api/v1/fda/stats")
+def fda_stats(db: Session = Depends(get_db)):
+    """FDA area stats: counts by event_type + enriched count."""
+    rows = db.query(FDAEvent.event_type, func.count(FDAEvent.fda_event_id))\
+        .group_by(FDAEvent.event_type).all()
+    counts = {r[0] or "unknown": r[1] for r in rows}
+    enriched = db.query(func.count(FDAEvent.fda_event_id)).filter(
+        func.coalesce(FDAEvent.llm_analysis, "{}") != "{}").scalar() or 0
+    total = sum(counts.values())
+    return {"region": "USA / FDA", "counts": counts, "total": total, "enriched": enriched}
+
+
+@app.get("/api/v1/eu/signals")
+def eu_signals(page: int = 1, page_size: int = 30, q: str = None,
+               min_score: int = 0, db: Session = Depends(get_db)):
+    """Dedicated EUROPEAN UNION (EMA / EudraGMDP) signal area — lists eu_events."""
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 200)
+    query = db.query(EUEvent)
+    if q:
+        like = f"%{q.strip().lower()}%"
+        query = query.filter(
+            or_(func.lower(EUEvent.firm_name).like(like),
+                func.lower(EUEvent.product_name).like(like),
+                func.lower(EUEvent.evidence_text).like(like)))
+    if min_score:
+        query = query.filter(EUEvent.score >= min_score)
+    total = query.count()
+    rows = query.order_by(EUEvent.score.desc())\
+        .offset((page - 1) * page_size).limit(page_size).all()
+    return {
+        "region": "EU / EMA",
+        "items": [_international_event_card(r, "eu") for r in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": (total + page_size - 1) // page_size,
+    }
+
+
+@app.get("/api/v1/eu/stats")
+def eu_stats(db: Session = Depends(get_db)):
+    """EU area stats: counts by event_type + enriched count."""
+    rows = db.query(EUEvent.event_type, func.count(EUEvent.eu_event_id))\
+        .group_by(EUEvent.event_type).all()
+    counts = {r[0] or "unknown": r[1] for r in rows}
+    enriched = db.query(func.count(EUEvent.eu_event_id)).filter(
+        func.coalesce(EUEvent.llm_analysis, "{}") != "{}").scalar() or 0
+    total = sum(counts.values())
+    return {"region": "EU / EMA", "counts": counts, "total": total, "enriched": enriched}
+
+
+@app.get("/api/v1/fda-eu/records/stats")
+def fda_e_record_stats(db: Session = Depends(get_db)):
+    """Combined FDA + EU area stats."""
+    fda_rows = db.query(FDAEvent.event_type, func.count(FDAEvent.fda_event_id))\
+        .group_by(FDAEvent.event_type).all()
+    eu_rows = db.query(EUEvent.event_type, func.count(EUEvent.eu_event_id))\
+        .group_by(EUEvent.event_type).all()
+    fda_counts = {r[0] or "unknown": r[1] for r in fda_rows}
+    eu_counts = {r[0] or "unknown": r[1] for r in eu_rows}
+    fda_enriched = db.query(func.count(FDAEvent.fda_event_id)).filter(
+        func.coalesce(FDAEvent.llm_analysis, "{}") != "{}").scalar() or 0
+    eu_enriched = db.query(func.count(EUEvent.eu_event_id)).filter(
+        func.coalesce(EUEvent.llm_analysis, "{}") != "{}").scalar() or 0
+    return {
+        "fda": {"counts": fda_counts, "total": sum(fda_counts.values()), "enriched": fda_enriched},
+        "eu": {"counts": eu_counts, "total": sum(eu_counts.values()), "enriched": eu_enriched},
+        "total": sum(fda_counts.values()) + sum(eu_counts.values()),
+    }
 
 @app.get("/api/v1/regulatory/check/status/{workflow_id}")
 async def regulatory_check_status(workflow_id: str):
