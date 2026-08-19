@@ -80,7 +80,49 @@ source venv/bin/activate        # Windows (WSL): source venv/bin/activate
 
 ---
 
-## 3. Create the environment file (`.env`)
+## 3. SSH key setup (for pushing to remote)
+
+If you're working on a dev branch and need to push, set up an SSH key:
+
+```bash
+# Generate a keypair in the project root
+ssh-keygen -t ed25519 -f .ssh_key -N "" -C "your@email.com"
+
+# Add to ~/.ssh/config
+cat >> ~/.ssh/config <<'EOF'
+
+Host github-personal
+    HostName github.com
+    User git
+    IdentityFile /path/to/AIVOA-Sentinel-level-1/.ssh_key
+    IdentitiesOnly yes
+EOF
+
+chmod 600 ~/.ssh_config .ssh_key
+```
+
+Then add the **public** key (`.ssh_key.pub`) to your GitHub account
+(Settings → SSH Keys).
+
+Update the remote to use the personal key alias:
+
+```bash
+git remote set-url origin git@github-personal:ManiGOo/AIVOA-Sentinel-level-1.git
+```
+
+Test:
+
+```bash
+ssh -T git@github-personal
+# Hi <username>! You've successfully authenticated...
+```
+
+The `.ssh_key` and `.ssh_key.pub` files are **gitignored** — they stay
+local and are never committed.
+
+---
+
+## 4. Create the environment file (`.env`)
 
 The repo **ignores and does not commit** `.env` (secrets). Create it from this
 template — the app reads these from the process environment:
@@ -112,7 +154,7 @@ ENABLE_MCP=1
 > ```bash
 > set -a && source .env && set +a
 > ```
-> (Or run uvicorn with `--env-file .env` — see §7.)
+> (Or run uvicorn with `--env-file .env` — see §8.)
 
 ### 4. Create the database + user (PostgreSQL)
 
@@ -124,7 +166,7 @@ SQL
 ```
 
 Make sure `DATABASE_URL` in `.env` matches. The app creates its tables
-automatically in the `sdr_data` schema (see §6) — you do **not** need to run
+automatically in the `sdr_data` schema (see §7) — you do **not** need to run
 any migration tool.
 
 ---
@@ -171,7 +213,7 @@ Verify:
 
 The dev server auto-creates the `default` namespace. If you later run the
 `app` / `worker` / `enricher` compose services, they connect to
-`temporal:7233` over the compose network (see §9).
+`temporal:7233` over the compose network (see §10).
 
 ---
 
