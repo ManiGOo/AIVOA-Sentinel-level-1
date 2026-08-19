@@ -1,9 +1,8 @@
 import asyncio
-import os
 from concurrent.futures import ThreadPoolExecutor
 
 from db_setup import init_db
-from temporalio.client import Client
+from temporal_connect import connect_with_retry
 from temporalio.worker import Worker
 from enrichment_tasks import EnrichmentWorkflow, fetch_external_evidence
 from web_evidence_tasks import (
@@ -17,16 +16,11 @@ from lead_research_tasks import (
     search_company_profile_activity,
     search_decision_makers_activity,
     search_intent_signals_activity,
+    extract_people_activity,
     evaluate_and_save_lead_activity,
     mark_lead_failed_activity,
-)
-from campaign_tasks import (
-    CampaignWorkflow,
-    create_campaign_activity,
-    start_campaign_activity,
-    generate_lead_messages_activity,
-    send_message_activity,
-    complete_campaign_activity,
+    scrape_company_website_activity,
+    search_corporate_registry_activity,
 )
 from regulatory_scrape_tasks import (
     RegulatoryFullPullWorkflow,
@@ -39,11 +33,11 @@ from regulatory_scrape_tasks import (
 
 async def main():
     init_db()
-    client = await Client.connect(os.environ.get("TEMPORAL_HOST", "localhost:7233"))
+    client = await connect_with_retry()
     worker = Worker(
         client,
         task_queue="enrichment-task-queue",
-        workflows=[EnrichmentWorkflow, WebEvidenceWorkflow, LeadResearchWorkflow, CampaignWorkflow,
+        workflows=[EnrichmentWorkflow, WebEvidenceWorkflow, LeadResearchWorkflow,
                    RegulatoryFullPullWorkflow, ScrapedRecordCheckWorkflow],
         activities=[
             fetch_external_evidence,
@@ -52,14 +46,12 @@ async def main():
             fetch_and_classify_articles,
             search_company_profile_activity,
             search_decision_makers_activity,
+            extract_people_activity,
             search_intent_signals_activity,
             evaluate_and_save_lead_activity,
             mark_lead_failed_activity,
-            create_campaign_activity,
-            start_campaign_activity,
-            generate_lead_messages_activity,
-            send_message_activity,
-            complete_campaign_activity,
+            scrape_company_website_activity,
+            search_corporate_registry_activity,
             scrape_regulatory_records,
             save_scraped_records,
             link_scraped_records_for_firm,

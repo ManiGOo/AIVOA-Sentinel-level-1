@@ -1,7 +1,6 @@
 import asyncio
-import os
 from concurrent.futures import ThreadPoolExecutor
-from temporalio.client import Client
+from temporal_connect import connect_with_retry
 from temporalio.worker import Worker
 from temporal_tasks import (
     CDSCOScraperWorkflow,
@@ -22,8 +21,8 @@ from temporal_tasks import (
 )
 
 async def main():
-    # Connect to the Temporal server (host override supported for Docker)
-    client = await Client.connect(os.environ.get("TEMPORAL_HOST", "localhost:7233"))
+    # Connect to the Temporal server (retries on transient DNS/connect errors)
+    client = await connect_with_retry()
     
     # Create the worker
     worker = Worker(

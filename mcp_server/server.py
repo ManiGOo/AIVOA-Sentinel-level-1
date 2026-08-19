@@ -34,7 +34,7 @@ mcp = MCPServer(
 # ---------------------------------------------------------------------------
 # Import tool modules (after sys.path fix)
 # ---------------------------------------------------------------------------
-from mcp_server.tools import signals, scraper, llm
+from mcp_server.tools import signals, scraper, llm, leads
 from mcp_server import resources, prompts
 
 
@@ -118,6 +118,18 @@ def get_web_evidence(event_id: str) -> str:
         event_id: UUID of the regulatory event
     """
     return json.dumps(signals.get_web_evidence(event_id), default=str)
+
+
+@mcp.tool()
+def get_lead(company_name: str) -> str:
+    """Retrieve researched lead data for a company: decision makers, contacts,
+    hiring, activity signals, QMS triggers, website and status.
+
+    Args:
+        company_name: Company name or key (e.g. 'R.P. Biotech Pvt. Ltd').
+            Matches the company used on the Leads page.
+    """
+    return json.dumps(leads.get_lead(company_name), default=str)
 
 
 # ===== WORKFLOW TRIGGER TOOLS (async) ========================================

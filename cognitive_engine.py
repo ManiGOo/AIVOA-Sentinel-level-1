@@ -791,29 +791,45 @@ def _lead_company_tokens(company_name: str) -> set:
 
 def _fuzzy_company_match(company_name: str, text: str) -> bool:
     """Lenient company-name matching that handles variants like
-    "Pharmaceuticals" vs "Pharma" vs "Bioceuticals", "Pvt Ltd" vs "Private Limited"."""
+    "Pharmaceuticals" vs "Pharma" vs "Bioceuticals", "Pvt Ltd" vs "Private
+    Limited", and initials ("R.P. Biotech" -> "RP BIOTECH").
+
+    The distinctive part of the name (initials + core word) must appear as a
+    contiguous run with flexible separators, so pages about a DIFFERENT company
+    that merely share the generic word ("MAPLE BIOTECH", "SUCANTIS BIOTECH")
+    do not match "R.P. Biotech"."""
     if not text:
         return False
     cleaned = clean_company_name(PAREN.sub("", company_name or "")).lower()
-    text_lower = text.lower()
-    # Exact cleaned name match
-    if cleaned and cleaned in text_lower:
-        return True
-    # Token overlap
-    name_tokens = _lead_company_tokens(company_name)
-    if not name_tokens:
+    if not cleaned:
         return False
-    text_tokens = set(re.findall(r"[a-z0-9]+", text_lower))
-    # Check distinctive token overlap (exclude generic pharma words)
-    generic = {"pharmaceutical", "pharmaceuticals", "pharma", "private", "limited",
-               "pvt", "ltd", "company", "india", "bioceuticals", "biotech", "lifesciences"}
-    distinctive = name_tokens - generic
-    if distinctive and len(distinctive & text_tokens) >= 1:
+    text_lower = text.lower()
+    if cleaned in text_lower:
         return True
-    # Even with only generic tokens, require strong overlap
-    if len(name_tokens) >= 2 and len(name_tokens & text_tokens) >= max(1, len(name_tokens) // 2):
-        return True
-    return False
+    tokens = re.findall(r"[a-z0-9]+", cleaned)
+    # Drop legal suffixes from the end (pvt ltd, private limited, co, corp...).
+    while tokens and tokens[-1] in _FUZZY_LEGAL_SUFFIXES:
+        tokens.pop()
+    if not tokens:
+        return False
+
+    # Flexible-format pattern: dots and spaces between words are optional, so
+    # "R.P. Biotech", "R P BIOTECH", "RP BIOTECH" and "r.p.biotech" all match.
+    # Initials (len <= 2) also allow a dot between their letters (e.g. "R.P.").
+    def _flex(tok: str) -> str:
+        if len(tok) <= 2:
+            return r"\.?".join(tok)
+        return tok
+
+    parts = [_flex(t) for t in tokens]
+    pattern = r"\b" + r"\s*\.?\s*".join(parts)
+    return re.search(pattern, text_lower) is not None
+
+
+_FUZZY_LEGAL_SUFFIXES = {
+    "pvt", "ltd", "private", "limited", "co", "corp", "corporation",
+    "inc", "incorp", "and", "the", "of", "company", "enterprises",
+}
 
 
 def _heuristic_lead_relevance(company_name: str, result: dict, category: str) -> dict:
@@ -948,9 +964,11 @@ in the same order.
             item = out[i]
         else:
             item = _heuristic_lead_relevance(company_name, r, category)
-        # Boost: if fuzzy name match says yes but LLM scored low, raise floor
+        # Boost: if fuzzy name match says yes but LLM scored low, raise floor.
+        # Never override the LLM's category judgment — a company profile or news
+        # article is not a job posting just because the company name appears.
         llm_score = item.get("relevance_score") or 0
-        if pre[i] and llm_score < 50:
+        if pre[i] and llm_score < 50 and item.get("category_match") is not False:
             item["relevance_score"] = max(llm_score, 55)
             item["company_match"] = True
             item.setdefault("reason", "")
