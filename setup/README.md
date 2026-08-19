@@ -47,6 +47,7 @@ workflows** on two worker task queues.
 | `TAVILY_API_KEY` | No | Web-evidence + lead-research web search. |
 | `VIEW_ONLY` | No | `1` = read-only deploy (blocks all scrape/enrich/dispatch triggers). Default `0`. |
 | `ENABLE_MCP` | No | `1` = mount MCP at `/mcp` (default). Set `0` to disable. |
+| `OPENFDA_API` | No | API key for openFDA API (higher rate limits). Used by FDA adapter when available. |
 
 ---
 
