@@ -1,5 +1,7 @@
 # Secrets — never commit
 .env
+.ssh_key
+.ssh_key.pub
 
 # Python
 venv/
